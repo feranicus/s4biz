@@ -141,16 +141,30 @@ def remote(payload_json, dry=False):
     #
     # The facts now travel INSIDE the script as base64, so stdin is used by exactly one thing. It
     # also removes a quoting layer: the JSON never passes through a shell word.
+    # AND THEN IT FAILED AGAIN, ON THE SAME STREAM, ONE LAYER IN.
+    #
+    #     docker exec -i s4biz-web python3 - <<'PY' ... PY < /tmp/s4_facts.json
+    #
+    # A command may have a heredoc AND a stdin redirect, and **the LAST redirection wins**. So the
+    # heredoc was discarded, `python3 -` read the FACTS as its program, and the container reported
+    #     NameError: name 'true' is not defined
+    # which is JSON's lowercase `true` being executed as Python. The panel therefore answered 0 of 4
+    # for a reason that had nothing to do with the models or the key.
+    #
+    # THE LESSON IS THE SAME ONE, THIRD TIME: stop routing two different things through stdin and
+    # hoping the shell picks the one you meant. Now NEITHER travels on stdin — both files are
+    # written on the droplet, copied into the container, and the program is named in ARGV with the
+    # facts path as an argument. There is no stream left to get confused about.
     facts_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("ascii")
-    script = r'''
-set -e
-base64 -d > /tmp/s4_facts.json <<'B64EOF'
-''' + facts_b64 + r'''
-B64EOF
-docker exec -i s4biz-web python3 - <<'PY' < /tmp/s4_facts.json
-import json, os, sys, urllib.request, urllib.error
+    prog = PROGRAM % (json.dumps(PANEL), json.dumps(ARCH), json.dumps(PROMPT),
+                      "True" if dry else "False")
+    prog_b64 = base64.b64encode(prog.encode("utf-8")).decode("ascii")
+    return _run(facts_b64, prog_b64)
 
-facts = json.load(sys.stdin)
+
+PROGRAM = r'''import json, os, sys, urllib.request, urllib.error
+
+facts = json.load(open(sys.argv[1], encoding="utf-8"))
 PANEL = %s
 ARCH  = %s
 PROMPT= %s
@@ -211,9 +225,33 @@ if not %s:
         notify.email("s4biz.io release %%s" %% facts.get("commit","?"), text)
     except Exception as e:
         print("[!] delivery failed: %%r" %% (e,))
-PY
-''' % (json.dumps(PANEL), json.dumps(ARCH), json.dumps(PROMPT), "True" if dry else "False")
+'''
 
+
+def remote_script(facts_b64, prog_b64):
+    """The bash that runs on the droplet. Separate so a test can BUILD it and check it.
+
+    Every payload travels base64 inside a heredoc and is then handed over BY PATH. Nothing
+    important is on stdin except the script itself, which is what `bash -s` is for.
+    """
+    return ('''set -e
+C=s4biz-web
+docker inspect -f . "$C" >/dev/null 2>&1 || { echo "[!] no $C container on this host"; exit 1; }
+base64 -d > /tmp/s4_facts.json <<'FACTSEOF'
+''' + facts_b64 + '''
+FACTSEOF
+base64 -d > /tmp/s4_panel.py <<'PROGEOF'
+''' + prog_b64 + '''
+PROGEOF
+docker cp /tmp/s4_facts.json "$C":/tmp/s4_facts.json >/dev/null
+docker cp /tmp/s4_panel.py  "$C":/tmp/s4_panel.py  >/dev/null
+docker exec "$C" python3 /tmp/s4_panel.py /tmp/s4_facts.json
+rm -f /tmp/s4_facts.json /tmp/s4_panel.py
+''')
+
+
+def _run(facts_b64, prog_b64):
+    script = remote_script(facts_b64, prog_b64)
     tgt = "%s@%s" % (USER, HOST)
     try:
         # The script is the ONLY thing on stdin now. Bytes, never text mode: on Windows that would

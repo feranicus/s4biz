@@ -308,10 +308,10 @@ def digest(checks, reviews, gate):
     answered = [r for r in reviews if r.get("verdict")]
     lines.append("REVIEW PANEL (%d of 4 answered)" % len(answered))
     if len(answered) < 3:
-        # A SAFEGUARD THAT CANNOT FIRE MUST ANNOUNCE IT. The unanimous-dissent halt needs three
-        # answers, so below quorum it is silently disarmed, and silence is indistinguishable from
-        # "it passed".
-        lines.append("  !! BELOW QUORUM: the unanimous-dissent halt CANNOT fire this run.")
+        # A SAFEGUARD THAT CANNOT FIRE MUST ANNOUNCE IT, and here it does more than announce: below
+        # quorum the promotion is REFUSED, because a record claiming a review that did not happen
+        # is worse than no record.
+        lines.append("  !! BELOW QUORUM: fewer than 3 of 4 answered, so this release is REFUSED.")
     for r in reviews:
         lines.append("  [%s] %-18s %s" % (r.get("role", "?"), r.get("model", "?"),
                                           r.get("verdict", "no answer")))
@@ -369,12 +369,35 @@ def _decide_from_verdict(verdict):
     contradicts a green gate, the gate is the thing under suspicion, and that has to reach a human
     BEFORE production rather than in a paragraph afterwards. A quorum is three, so one dissent
     never stops a release.
+
+    AND A PANEL THAT NEVER ANSWERED DOES NOT PASS. A release that reaches production having
+    reviewed nothing, under a heading that says four models reviewed it, is worse than one with no
+    panel at all: the record claims a review that did not happen. This shipped exactly once, with
+    `REVIEW PANEL (0 of 4 answered)` printed directly above `GATE: GO`, because the remote script
+    was broken and silence read as consent.
+
+    So below quorum is a NO-GO. This is a DELIBERATE DEPARTURE from the sibling project, where a
+    rate limit must never block a good release. The difference is that s4biz.io ships a marketing
+    site a few times a week, not an engine under load, so waiting for the panel costs nothing and
+    the review is the point. OVERRIDE_PANEL=1 promotes anyway, and says so in the record.
     """
     gate = verdict.get("gate", "NO-GO")
     revs = [r for r in (verdict.get("reviews") or []) if r.get("verdict")]
+    override = bool(os.environ.get("OVERRIDE_PANEL"))
+    verdict["below_quorum"] = len(revs) < 3
+    if gate == "GO" and verdict["below_quorum"] and not override:
+        verdict["gate"] = gate = "NO-GO"
+        verdict["digest"] = (
+            "HALTED: every deterministic check passed, but only %d of 4 reviewers answered.\n"
+            "A release must not claim a four-model review that did not happen. This is almost\n"
+            "always the panel PLUMBING rather than the models: run `python quorum.py --dry` to\n"
+            "see the error from the droplet. To promote without a review: OVERRIDE_PANEL=1.\n\n"
+            % len(revs)) + verdict.get("digest", "")
+        return gate, verdict["digest"]
+
     dissent = [r for r in revs if str(r.get("verdict", "")).lower().replace("_", "-") == "no-go"]
     verdict["unanimous_dissent"] = bool(revs) and len(dissent) == len(revs) and len(revs) >= 3
-    if gate == "GO" and verdict["unanimous_dissent"] and not os.environ.get("OVERRIDE_PANEL"):
+    if gate == "GO" and verdict["unanimous_dissent"] and not override:
         names = ", ".join(str(r.get("model", "?")) for r in revs)
         verdict["gate"] = gate = "NO-GO"
         verdict["digest"] = (

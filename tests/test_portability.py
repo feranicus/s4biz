@@ -161,6 +161,62 @@ def test_a_missing_source_file_is_a_defect_not_a_missing_toolchain():
     )
 
 
+def test_no_command_has_both_a_heredoc_and_a_stdin_redirect():
+    """`cmd <<'EOF' ... EOF < file` — the LAST redirection wins, so the heredoc is DISCARDED.
+
+    This shipped as `docker exec -i s4biz-web python3 - <<'PY' ... PY < /tmp/s4_facts.json`. The
+    container therefore ran the FACTS as its program and died on `NameError: name 'true' is not
+    defined`, which is JSON's lowercase true being executed as Python. The visible symptom was
+    `REVIEW PANEL (0 of 4 answered)` on every release, which looks like a model or key problem and
+    is not.
+
+    Third instance of one root cause in this project: a secret piped to `bash -s`, a facts file
+    `cat` into `bash -s`, and now a heredoc losing to a redirect. Stop routing two things through
+    stdin. Pass one of them by PATH.
+    """
+    def prose_removed(src):
+        """Blank the DOCSTRINGS and # comments, keep every other string.
+
+        Not "strip all string literals": the shell scripts under inspection ARE string literals,
+        so that would blind the check completely. And not "keep everything": the paragraph above
+        quotes the exact defective line, and the first version of this check duly failed on its own
+        explanation. That mistake is now recorded five times in this project — brand gate, recover,
+        caddyguard, secaudit, here — so it is done properly with the parser.
+        """
+        lines = src.splitlines()
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return src
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.ClassDef)):
+                continue
+            body = getattr(node, "body", None) or []
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                for i in range(body[0].lineno - 1, (body[0].end_lineno or body[0].lineno)):
+                    if i < len(lines):
+                        lines[i] = ""
+        return "\n".join("" if ln.lstrip().startswith("#") else ln for ln in lines)
+
+    bad = []
+    for p in list(_py_files(ROOT)) + list(_py_files(TESTS)):
+        src = prose_removed(open(p, encoding="utf-8").read())
+        for m in re.finditer(r"<<-?\s*'?([A-Za-z_][A-Za-z0-9_]*)'?(.*)$", src, re.M):
+            tail = m.group(2)
+            # A redirect on the SAME command line as the heredoc opener, or on the line that
+            # closes it, silently replaces the heredoc as stdin.
+            if re.search(r"(?<![0-9<>])<(?!<)", tail):
+                bad.append("%s: heredoc %s also has a stdin redirect" % (os.path.basename(p),
+                                                                         m.group(1)))
+        for m in re.finditer(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+<(?!<)\s*\S+", src, re.M):
+            if re.search(r"<<-?\s*'?%s'?" % re.escape(m.group(1)), src):
+                bad.append("%s: heredoc %s is closed on a line that redirects stdin"
+                           % (os.path.basename(p), m.group(1)))
+    assert not bad, "\n  ".join(["the heredoc is discarded, the redirect wins:"] + sorted(set(bad)))
+
+
 def test_no_test_hands_a_windows_path_to_bash():
     """`bash.EXE` on Windows is WSL's bash, and it CANNOT read a Windows path.
 

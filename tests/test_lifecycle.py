@@ -6,6 +6,7 @@
 
 Every assertion here traces to a way this has gone wrong on the sibling project, on the same host.
 """
+import json
 import os
 import re
 import sys
@@ -188,13 +189,19 @@ def _verdict(gate, verdicts):
             "reviews": [{"model": "m%d" % i, "verdict": v} for i, v in enumerate(verdicts)]}
 
 
-def test_models_cannot_veto_a_good_release():
-    """A rate-limited or opinionated model must not be able to block a release on its own. Only a
-    UNANIMOUS panel, and only against a green gate, and only with a quorum."""
+def test_one_model_cannot_veto_a_good_release():
+    """No SINGLE reviewer may block a release. Only a unanimous panel, against a green gate.
+
+    REWRITTEN 16 Aug 2026, not deleted, because the doctrine changed and the reasoning is worth
+    keeping. This used to assert that ["NO-GO"] and ["NO-GO","NO-GO"] both promote. They no longer
+    do, and NOT because one model gained a veto: two answers out of four is below quorum, so the
+    release is refused for want of a review rather than on any model's opinion. The cases below all
+    have a quorum, which is where "one model must never hold the switch" actually applies.
+    """
     import stagegate
 
-    for verdicts in (["NO-GO"], ["NO-GO", "GO"], ["NO-GO", "NO-GO"],
-                     ["NO-GO", "NO-GO", "GO"], ["UNSURE", "UNSURE", "UNSURE"]):
+    for verdicts in (["NO-GO", "GO", "GO"], ["NO-GO", "NO-GO", "GO"],
+                     ["UNSURE", "UNSURE", "UNSURE"], ["NO-GO", "GO", "GO", "GO"]):
         gate, _ = stagegate._decide_from_verdict(_verdict("GO", verdicts))
         assert gate == "GO", "%r blocked a green gate; only a unanimous quorum may halt" % verdicts
 
@@ -236,14 +243,20 @@ def test_the_halt_can_be_overridden_deliberately():
         os.environ.pop("OVERRIDE_PANEL", None)
 
 
-def test_below_quorum_the_halt_cannot_fire_and_says_so():
-    """A safeguard that cannot fire must announce it. Silence is indistinguishable from a pass."""
+def test_below_quorum_the_release_is_refused_and_says_so():
+    """A safeguard that cannot fire must announce it — and here it refuses rather than announcing.
+
+    REWRITTEN 16 Aug 2026. The old version asserted that below quorum the run PROMOTES with a
+    warning, which is precisely what shipped a release under the heading `REVIEW PANEL (0 of 4
+    answered)`. A warning nobody can act on before the fact is not a safeguard.
+    """
     import stagegate
 
-    gate, _ = stagegate._decide_from_verdict(_verdict("GO", ["NO-GO", "NO-GO"]))
-    assert gate == "GO"
+    gate, dg = stagegate._decide_from_verdict(_verdict("GO", ["NO-GO", "NO-GO"]))
+    assert gate == "NO-GO", "two answers is not a panel"
+    assert "only 2 of 4" in dg, "the record must say how many answered"
     d = stagegate.digest([], [{"model": "a", "verdict": "GO"}], "GO")
-    assert "BELOW QUORUM" in d
+    assert "BELOW QUORUM" in d and "REFUSED" in d
 
 
 def test_a_pass_whose_own_detail_says_it_failed_is_demoted():
@@ -387,3 +400,72 @@ def test_off_box_uptime_exists_and_is_not_fooled_by_the_bot_gate():
         "how a monitor comes to accept an outage."
     )
     assert "openssl" in up, "nothing watches the certificate from outside"
+
+
+# --------------------------------------------------------------------------------------
+# The four-model panel must actually run, and a release must not pass without it.
+# --------------------------------------------------------------------------------------
+
+def _decide(reviews, gate="GO", override=False):
+    import stagegate
+    os.environ.pop("OVERRIDE_PANEL", None)
+    if override:
+        os.environ["OVERRIDE_PANEL"] = "1"
+    try:
+        return stagegate._decide_from_verdict({"gate": gate, "reviews": reviews, "digest": "d"})[0]
+    finally:
+        os.environ.pop("OVERRIDE_PANEL", None)
+
+
+def _answers(n, verdict="GO"):
+    return [{"model": "m%d" % i, "role": "soldier", "verdict": verdict} for i in range(n)]
+
+
+def test_a_release_is_refused_when_the_panel_did_not_answer():
+    """`REVIEW PANEL (0 of 4 answered)` printed directly above `GATE: GO` once. Never again.
+
+    A record that claims a four-model review which did not happen is worse than no record: it
+    reads as evidence and is not. Below quorum the promotion is refused.
+    """
+    assert _decide([]) == "NO-GO", "0 of 4 answered must not promote"
+    assert _decide(_answers(1)) == "NO-GO", "1 of 4 is not a panel"
+    assert _decide(_answers(2)) == "NO-GO", "2 of 4 is below quorum"
+    assert _decide(_answers(3)) == "GO", "3 of 4 is a quorum and they agreed"
+    assert _decide(_answers(4)) == "GO"
+    # The escape hatch is deliberate and must exist, or a model outage becomes an outage for us.
+    assert _decide([], override=True) == "GO", "OVERRIDE_PANEL=1 must still promote"
+    # And the older rule still holds: unanimous dissent against a green gate halts.
+    assert _decide(_answers(3, "NO-GO")) == "NO-GO"
+    # A failing deterministic check is still decided by code, never rescued by the panel.
+    assert _decide(_answers(4), gate="NO-GO") == "NO-GO"
+
+
+def test_the_panel_program_is_valid_python_and_is_passed_by_path():
+    """The remote program is built by string formatting, so nothing checks it until it runs.
+
+    It ran on the droplet for several releases and failed every time. Compiling it here costs a
+    millisecond and is the difference between a defect found now and `0 of 4 answered` in
+    production.
+    """
+    import quorum
+
+    prog = quorum.PROGRAM % (json.dumps(quorum.PANEL), json.dumps(quorum.ARCH),
+                             json.dumps(quorum.PROMPT), "True")
+    compile(prog, "<panel>", "exec")          # raises SyntaxError on a bad %-escape
+    assert "sys.argv[1]" in prog, "the facts must arrive as a PATH, never on stdin"
+    assert "sys.stdin" not in prog
+
+    script = quorum.remote_script("RkFDVFM=", "cHJvZw==")
+    assert "docker cp" in script, "both payloads are copied in, not streamed"
+    assert re.search(r"docker exec\s+\"\$C\"\s+python3\s+/tmp/s4_panel\.py", script), \
+        "the program must be named in argv, not read from stdin as `python3 -`"
+    assert " < /tmp" not in script, "a stdin redirect here would silently discard a heredoc"
+
+
+def test_both_the_gate_and_the_release_notes_use_one_panel_implementation():
+    """Two copies of this would drift, and the copy nobody watches is the one that breaks."""
+    sg = open(os.path.join(ROOT, "stagegate.py"), encoding="utf-8").read()
+    assert "import quorum" in sg and "quorum.remote(" in sg, \
+        "the staging gate must call quorum, not carry its own panel"
+    ship = open(os.path.join(ROOT, "ship.py"), encoding="utf-8").read()
+    assert "quorum" in ship, "the release notes must come from the same module"
