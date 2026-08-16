@@ -21,6 +21,7 @@ Flags NARROW it, they never split it:
     -m "message"    commit message
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -31,6 +32,11 @@ sys.path.insert(0, HERE)
 
 HOST = os.environ.get("DROPLET_HOST", "64.225.108.200")
 STAGING = os.environ.get("STAGING_HOST", "165.245.244.174")
+
+# Carried from the safe-point step to the release notes. PREV_GOOD is where last-known-good
+# pointed BEFORE this run moved it, which is the only honest baseline for "what is new".
+PREV_GOOD = ""
+STAGING_DIGEST = ""
 USER = os.environ.get("DROPLET_USER", "root")
 DOMAIN = "s4biz.io"
 
@@ -276,6 +282,8 @@ def do_stage(fast=False):
         BAD.append("the staging gate could not run (%r)" % (e,))
         return False
 
+    global STAGING_DIGEST
+    STAGING_DIGEST = dg
     say()
     say(dg)
     say()
@@ -464,6 +472,16 @@ def do_tag():
         say("  no git repository, nothing to tag")
         return ""
     stamp = time.strftime("good-%Y%m%d-%H%M%S", time.gmtime())
+    # REMEMBER WHERE last-known-good POINTED BEFORE WE MOVE IT.
+    #
+    # The release notes run AFTER this, and they describe "what changed since the last state that
+    # actually reached production". Moving the tag first makes that range `HEAD..HEAD`, i.e. empty,
+    # so the panel was handed an empty diffstat and three models correctly answered UNSURE and said
+    # they had been given nothing to review. They were right: they had not.
+    global PREV_GOOD
+    rc, prev = git("rev-parse", "last-known-good^{commit}")
+    if not rc:
+        PREV_GOOD = prev.strip()
     git("tag", "-f", "last-known-good")
     git("tag", stamp)
     rc, out = git("remote")
@@ -573,9 +591,22 @@ def main():
     # broken one; both directions are failures, and only the deterministic checks above decide.
     head("RELEASE NOTES")
     try:
+        # GIVE THE PANEL THE EVIDENCE. It was previously handed a commit sha, an empty diffstat and
+        # nothing else, and then asked whether the release was sound. Every model said UNSURE and
+        # named the same gap. A reviewer with no evidence is not a reviewer.
         run([sys.executable, os.path.join(HERE, "quorum.py")], timeout=480,
             env={**os.environ,
                  "S4_GATES": "ok" if not BAD else "failed",
+                 "S4_BASE": PREV_GOOD,
+                 "S4_FACTS": json.dumps({
+                     "gates": "%d passed, %d failed" % (len(OK), len(BAD)),
+                     "tests": "passed" if "python tests" in OK else "did not pass",
+                     "deploy": "deployed" if "deployed" in OK else "not deployed",
+                     "verify": "verified from outside the droplet"
+                               if verified else "NOT verified from outside",
+                     "staging": STAGING_DIGEST[:2500] or "not run",
+                     "passed": OK, "failed": BAD,
+                 }),
                  "DROPLET_HOST": HOST})
     except Exception as e:
         say("  [!] the review could not run (%r). The release is unaffected." % (e,))

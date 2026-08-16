@@ -469,3 +469,107 @@ def test_both_the_gate_and_the_release_notes_use_one_panel_implementation():
         "the staging gate must call quorum, not carry its own panel"
     ship = open(os.path.join(ROOT, "ship.py"), encoding="utf-8").read()
     assert "quorum" in ship, "the release notes must come from the same module"
+
+
+def _panel_ns():
+    """Load the remote panel program's helpers here, so its logic is testable without a droplet."""
+    import quorum
+
+    prog = quorum.PROGRAM % (json.dumps(quorum.PANEL), json.dumps(quorum.ARCH),
+                             json.dumps(quorum.PROMPT), "True")
+    src = prog.split("reviews = []")[0]
+    src = src.replace('facts = json.load(open(sys.argv[1], encoding="utf-8"))', "facts = {}")
+    src = src.replace('sys.path.insert(0, "/app")', "")
+    ns = {}
+    exec(compile(src, "<panel>", "exec"), ns)
+    return ns
+
+
+def test_a_4xx_body_is_read_and_repaired_in_the_direction_the_server_named():
+    """kimi-k2.6 answered `HTTPError 400` on every release. The body said why, in words.
+
+    The gateway replies "temperature must be 0.6 for this model" and we sent 0.2. Discarding the
+    body is how the same reviewer gets written off as broken. And the repair is TARGETED: stripping
+    fields until something works once disabled a safeguard nobody knew was load-bearing.
+    """
+    import io
+    import urllib.error
+
+    ns = _panel_ns()
+    calls = []
+
+    def fake_post(p):
+        calls.append(dict(p))
+        if p["model"].startswith("kimi") and p.get("temperature") != 0.6:
+            raise urllib.error.HTTPError(
+                "u", 400, "Bad Request", None,
+                io.BytesIO(b'{"message":"temperature must be 0.6 for this model"}'))
+        return {"choices": [{"message": {"content": '{"verdict":"GO"}'},
+                             "finish_reason": "stop"}]}
+
+    ns["post"] = fake_post
+    assert ns["ask"]("deepseek-3.2") == {"verdict": "GO"}
+    assert len(calls) == 1, "a model that works must not pay for a retry"
+
+    calls.clear()
+    assert ns["ask"]("kimi-k2.6") == {"verdict": "GO"}, "the 400 must be recovered, not reported"
+    assert len(calls) == 2 and calls[-1]["temperature"] == 0.6, \
+        "the retry must re-send the value the SERVER named, not a guess"
+
+    # A 400 about something we do not send must NOT be silently swallowed as a model failure.
+    def other_400(p):
+        raise urllib.error.HTTPError("u", 400, "Bad Request", None,
+                                     io.BytesIO(b'{"message":"model not found"}'))
+
+    ns["post"] = other_400
+    try:
+        ns["ask"]("x")
+        assert False, "an unexplained 400 must surface, not disappear"
+    except RuntimeError as e:
+        assert "model not found" in str(e), "the body must reach the operator"
+
+
+def test_the_panel_can_import_the_app_so_the_notes_are_actually_delivered():
+    """The models answered, the notes were built, and delivery died on ModuleNotFoundError.
+
+    The program runs from /tmp, so /app is not on the path. Four inference calls were paid for and
+    nobody received the result.
+    """
+    import quorum
+
+    prog = quorum.PROGRAM % (json.dumps(quorum.PANEL), json.dumps(quorum.ARCH),
+                             json.dumps(quorum.PROMPT), "False")
+    assert 'sys.path.insert(0, "/app")' in prog
+    # STRIP THE COMMENTS FIRST. The paragraph explaining this defect quotes the failing import, so
+    # the position test matched the explanation rather than the code and failed a correct file.
+    # That is now the sixth time in this project family, hence doing it properly rather than
+    # remembering to.
+    body = code_only(prog)
+    assert body.index('sys.path.insert(0, "/app")') < body.index("from app import notify"), \
+        "the path must be set BEFORE the import that needs it"
+
+
+def test_the_release_notes_describe_a_range_that_is_not_empty():
+    """`last-known-good` is moved to HEAD one step BEFORE the notes run.
+
+    That made the range HEAD..HEAD, so the panel was handed an empty diffstat and three reviewers
+    answered UNSURE saying they had been given nothing to review. They were right.
+    """
+    import quorum
+
+    ship = open(os.path.join(ROOT, "ship.py"), encoding="utf-8").read()
+    tag = ship[ship.index("def do_tag("):ship.index("def do_rollback(")]
+    assert tag.index("PREV_GOOD") < tag.index('git("tag", "-f", "last-known-good")'), \
+        "the previous safe point must be read BEFORE the tag is moved, or it is lost"
+    assert '"S4_BASE": PREV_GOOD' in ship and '"S4_FACTS"' in ship, \
+        "the range and the evidence must reach quorum.py"
+
+    os.environ["S4_BASE"] = "HEAD~1"
+    os.environ["S4_FACTS"] = json.dumps({"verify": "verified from outside the droplet"})
+    try:
+        f = quorum.facts()
+        assert f.get("verify") == "verified from outside the droplet", \
+            "the deterministic evidence must reach the panel"
+    finally:
+        os.environ.pop("S4_BASE", None)
+        os.environ.pop("S4_FACTS", None)

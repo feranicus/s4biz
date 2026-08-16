@@ -106,7 +106,15 @@ def facts(extra=None):
     subject = g("log", "-1", "--pretty=%s")
     # Since the last state that actually reached production, not since the last commit somebody
     # happened to make. That is the honest baseline for "what is new".
-    rng = "last-known-good..HEAD" if g("tag", "-l", "last-known-good") else "HEAD~5..HEAD"
+    #
+    # S4_BASE is where last-known-good pointed BEFORE this run moved it. Without it the range is
+    # `HEAD..HEAD`, the diffstat is empty, and the panel is asked to review a change it cannot see:
+    # three reviewers said UNSURE for exactly that reason and were right to.
+    base = os.environ.get("S4_BASE", "").strip()
+    if base:
+        rng = "%s..HEAD" % base
+    else:
+        rng = "last-known-good..HEAD" if g("tag", "-l", "last-known-good") else "HEAD~5..HEAD"
     changed = g("diff", "--name-only", rng) or g("show", "--name-only", "--pretty=", "HEAD")
     stat = g("diff", "--shortstat", rng)
 
@@ -116,6 +124,12 @@ def facts(extra=None):
         "files_changed": [f for f in changed.splitlines() if f][:40],
         "diffstat": stat,
     }
+    # What the deterministic pipeline actually observed. A reviewer handed only a commit sha is
+    # not reviewing anything, and will correctly say so.
+    try:
+        out.update(json.loads(os.environ.get("S4_FACTS") or "{}"))
+    except ValueError:
+        pass
     if extra:
         out.update(extra)
     return out
@@ -162,7 +176,12 @@ def remote(payload_json, dry=False):
     return _run(facts_b64, prog_b64)
 
 
-PROGRAM = r'''import json, os, sys, urllib.request, urllib.error
+PROGRAM = r'''import json, os, re, sys, urllib.request, urllib.error
+
+# The app is not on the path when this runs from /tmp, and `from app import notify` at the bottom
+# then fails with ModuleNotFoundError AFTER the models have already answered -- so the review
+# happens, costs four calls, and nobody receives it.
+sys.path.insert(0, "/app")
 
 facts = json.load(open(sys.argv[1], encoding="utf-8"))
 PANEL = %s
@@ -171,21 +190,54 @@ PROMPT= %s
 base  = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")
 key   = os.environ.get("OPENAI_API_KEY", "")
 
+def post(payload):
+    req = urllib.request.Request(base + "/chat/completions",
+                                 data=json.dumps(payload).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", "Bearer " + key)
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read())
+
 def ask(model):
-    body = json.dumps({
+    payload = {
         "model": model,
         "messages": [{"role": "user",
                       "content": PROMPT %% (ARCH, json.dumps(facts, indent=2)[:6000])}],
         "temperature": 0.2,
-        "max_tokens": 900,
-    }).encode()
-    req = urllib.request.Request(base + "/chat/completions", data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", "Bearer " + key)
-    with urllib.request.urlopen(req, timeout=90) as r:
-        d = json.loads(r.read())
+        "max_tokens": 1800,
+    }
+    try:
+        d = post(payload)
+    except urllib.error.HTTPError as e:
+        # NEVER DISCARD AN API ERROR BODY. A 4xx is the server telling you what it wants, and
+        # kimi-k2.6 answers `HTTPError 400` while the body says, in words,
+        #     "temperature must be 0.6 for this model"
+        # Throwing that away is how the same reviewer was written off as broken three times.
+        #
+        # And repair WHAT IT NAMED, in the direction it named it. A blanket "strip fields until
+        # something works" retry once disabled a safeguard nobody knew was load-bearing.
+        if e.code not in (400, 422):
+            raise
+        msg = ""
+        try:
+            msg = e.read().decode("utf-8", "replace")
+        except Exception:
+            pass
+        m = re.search(r"temperature must be ([0-9.]+)", msg)
+        if m:
+            payload["temperature"] = float(m.group(1))
+        elif "temperature" in msg:
+            payload.pop("temperature", None)
+        if "max_tokens" in msg:
+            payload.pop("max_tokens", None)
+        if not m and "temperature" not in msg and "max_tokens" not in msg:
+            raise RuntimeError("400 and the body named nothing we send: " + msg[:200])
+        d = post(payload)
     t = d["choices"][0]["message"]["content"]
     i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j < 0:
+        raise RuntimeError("no JSON in the answer (%%d chars, finish=%%s)"
+                           %% (len(t), d["choices"][0].get("finish_reason")))
     return json.loads(t[i:j+1])
 
 reviews = []
