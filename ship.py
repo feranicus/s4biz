@@ -307,13 +307,27 @@ def do_deploy():
 # ---------------------------------------------------------------------------------------------
 # 5/6  VERIFY FROM OUTSIDE
 # ---------------------------------------------------------------------------------------------
-def fetch(url, ua=BROWSER_UA, timeout=20):
+def fetch(url, ua=BROWSER_UA, timeout=20, follow=True):
+    """follow=False is how a REDIRECT can be seen at all.
+
+    urllib follows redirects silently, so a check that wants to assert "www sends a 301 to the
+    apex" would only ever observe the apex's 200 and could never fail. A no-redirect opener makes
+    urllib raise on the 3xx, which the handler below already turns into (code, body, headers) —
+    and the Location header is the thing being asserted.
+    """
     import urllib.error
     import urllib.request
 
     req = urllib.request.Request(url, headers={"User-Agent": ua})
+    opener = urllib.request.urlopen
+    if not follow:
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect).open
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with opener(req, timeout=timeout) as r:
             return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace"), dict(e.headers)
@@ -394,12 +408,22 @@ def do_verify():
 
     # www has to work too. It is a separate name on the same certificate, and a deploy that gets
     # the apex right and drops www is a real outage for anyone whose bookmark has it.
-    st_www, body_www, _ = fetch("https://www.%s/" % DOMAIN)
-    if st_www not in (200, 301, 302, 308):
-        BAD.append("www.%s returned %s" % (DOMAIN, st_www))
+    # www REDIRECTS to the apex; it does not serve. One canonical host, matching the canonical tag
+    # and the sitemap. Asserting the exact status rather than "any of four" is what stops the
+    # monitors describing a behaviour nobody decided.
+    st_www, _body_www, hdr_www = fetch("https://www.%s/" % DOMAIN, follow=False)
+    loc = ""
+    for k, v in (hdr_www or {}).items():
+        if k.lower() == "location":
+            loc = v
+    if st_www != 301:
+        BAD.append("www.%s returned %s, expected a 301 to the apex" % (DOMAIN, st_www))
+        ok = False
+    elif DOMAIN not in loc or loc.startswith("https://www."):
+        BAD.append("www.%s redirects to %r, which is not the apex" % (DOMAIN, loc))
         ok = False
     else:
-        say("  www             %s" % st_www)
+        say("  www             301 -> %s" % loc)
 
     ok = check_certificate() and ok
     return ok

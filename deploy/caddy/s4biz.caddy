@@ -4,8 +4,23 @@
 # this file again, so it can never touch another project's block. A range delete keyed on a WORD
 # instead ("/s4biz/,/^}/d") eventually starts inside somebody else's comment and truncates their
 # site: that has happened on this exact host and produced a six hour outage.
-s4biz.io, www.s4biz.io {
+s4biz.io {
 	encode zstd gzip
 	reverse_proxy s4biz-web:8000
+}
+
+# ONE CANONICAL HOST. www REDIRECTS, it does not serve.
+#
+# Both names used to serve the same bytes. That is duplicate content against our own canonical tag
+# and sitemap, which both name the apex, and it made every monitor carry an alternation
+# ("200 or 301 or 302 or 308") to describe a thing we had never actually decided. That alternation
+# is what broke the uptime workflow: its fields are split on "|", the regex contained "|", and the
+# expectation shredded itself into `^(200 and >= 301|302|308)$`. It then failed every ten minutes,
+# for a site that was perfectly healthy, and mailed the operator each time.
+#
+# Deciding the behaviour removes the alternation, and with it the whole class of defect. Caddy
+# still obtains a certificate for www, because this is a named site block.
+www.s4biz.io {
+	redir https://s4biz.io{uri} permanent
 }
 # s4biz:site END

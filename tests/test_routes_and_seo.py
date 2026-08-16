@@ -132,3 +132,71 @@ def test_well_known_is_never_refused():
     r = H.get(app(), "/.well-known/security.txt")
     assert r.status == 200
     assert "mailto:" in r.text
+
+
+# --------------------------------------------------------------------------------------
+# The off-box monitor. It runs every ten minutes and emails on failure, so a defect in the
+# CHECK is an alarm every ten minutes about a healthy site.
+# --------------------------------------------------------------------------------------
+UPTIME = os.path.join(ROOT, ".github", "workflows", "uptime.yml")
+
+
+def _uptime_targets():
+    src = open(UPTIME, encoding="utf-8").read()
+    block = src[src.index("TARGETS=("):src.index(")", src.index("TARGETS=("))]
+    return re.findall(r'"([^"]+)"', block)
+
+
+def test_no_uptime_field_contains_the_delimiter_that_splits_it():
+    """`IFS='|' read -r name url want minb` splits on "|", and the regex CONTAINED "|".
+
+    The line was
+        "www|https://www.s4biz.io/|^(200|301|302|308)$|0"
+    so `want` became `^(200` (an unterminated group, which never matches) and `minb` became
+    `301|302|308)$` (not an integer). The monitor then failed every ten minutes against a site that
+    was answering perfectly, and mailed the operator each time.
+
+    Same defect class as a `sed` range delete keyed on a word that also appears in a comment: the
+    delimiter must not be able to occur inside the thing it delimits.
+    """
+    bad = []
+    for t in _uptime_targets():
+        parts = t.split("|")
+        if len(parts) != 4:
+            bad.append("%r splits into %d fields, not 4" % (t, len(parts)))
+    assert _uptime_targets(), "no targets found; the parser or the workflow moved"
+    assert not bad, "\n  ".join(["a target field contains the delimiter:"] + bad)
+
+    for t in _uptime_targets():
+        name, url, want, minb = t.split("|")
+        assert minb.isdigit(), "%s: min-bytes %r is not a number" % (name, minb)
+        assert want.startswith("^") and want.endswith("$"), \
+            "%s: %r is not an anchored status pattern" % (name, want)
+        re.compile(want)          # an unterminated group would raise here
+
+
+def test_the_monitor_and_the_deploy_agree_on_what_www_does():
+    """Two monitors describing one behaviour will disagree unless the behaviour is DECIDED.
+
+    www used to serve the same bytes as the apex, so both checks carried an alternation for a thing
+    nobody had chosen. It now redirects, the canonical tag and sitemap name the apex, and every
+    check asserts exactly one status.
+    """
+    frag = open(os.path.join(ROOT, "deploy", "caddy", "s4biz.caddy"), encoding="utf-8").read()
+    assert re.search(r"www\.s4biz\.io\s*\{[^}]*redir\s+https://s4biz\.io", frag), \
+        "www must redirect to the apex in the committed Caddy fragment"
+    assert not re.search(r"^s4biz\.io,\s*www\.s4biz\.io\s*\{", frag, re.M), \
+        "www is serving again instead of redirecting"
+
+    want = dict(t.split("|")[0:3:2] for t in _uptime_targets())
+    assert want["www"] == "^301$", "the off-box monitor expects %r for www" % want["www"]
+
+    ship = open(os.path.join(ROOT, "ship.py"), encoding="utf-8").read()
+    assert "st_www != 301" in ship, "the deploy verify must assert the same single status"
+    # ANCHOR ON THE CALL, not on the word. The first version asserted that "follow=False" appeared
+    # anywhere in ship.py, and it does: in fetch()'s own docstring explaining why the argument
+    # exists. So removing it from the call site passed. Seventh time a check in this project has
+    # matched its own prose.
+    assert re.search(r"fetch\([^)]*www[^)]*follow=False[^)]*\)", ship), \
+        ("the www probe follows redirects again. urllib follows 3xx silently, so the check would "
+         "only ever observe the apex's 200 and could never fail.")

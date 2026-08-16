@@ -29,10 +29,20 @@ jobs:
           FAIL=0
           # host|url|expected|min-bytes.  /api/health proves the container answers; / proves the
           # PAGE is served, and a blank 200 passes the first and fails the second.
+          #
+          # NO FIELD MAY CONTAIN THE DELIMITER. This read
+          #     "www|https://www.s4biz.io/|^(200|301|302|308)$|0"
+          # and `IFS='|' read` split the REGEX as well, so `want` became `^(200` and `minb` became
+          # `301|302|308)$`. An unterminated group never matches and a string is not an integer, so
+          # this failed every ten minutes against a healthy site and mailed the operator each time.
+          # A guard in tests/ now fails the build if any field carries a "|".
+          #
+          # The alternation is gone for a better reason than escaping: www REDIRECTS to the apex
+          # now, so there is one canonical host and one expected status.
           TARGETS=(
             "api|https://s4biz.io/api/health|^200$|10"
             "apex|https://s4biz.io/|^200$|2000"
-            "www|https://www.s4biz.io/|^(200|301|302|308)$|0"
+            "www|https://www.s4biz.io/|^301$|0"
             "robots|https://s4biz.io/robots.txt|^200$|100"
             "sitemap|https://s4biz.io/sitemap.xml|^200$|100"
           )
