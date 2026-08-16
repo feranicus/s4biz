@@ -118,6 +118,22 @@ def remote(proxy=True):
         # already exists; on a fresh staging box it does not, and compose fails before it builds
         # anything. Creating it when absent is idempotent and touches nothing on production.
         "docker network inspect videodead_appnet >/dev/null 2>&1 || docker network create videodead_appnet",
+        # DISCOVER where Loki actually is rather than hardcoding it. The log shipper needs to reach
+        # it, and it lives on a neighbour's network whose name differs between this box and a fresh
+        # staging twin. Asking docker is the difference between a working shipper and a container
+        # that restarts forever with a DNS error nobody reads.
+        "LOKI_CT=\"$(docker ps --format '{{.Names}}' | grep -i loki | head -1)\"",
+        "if [ -n \"$LOKI_CT\" ]; then"
+        "  LOKI_NET=\"$(docker inspect \"$LOKI_CT\" -f "
+        "'{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')\";"
+        "  printf 'LOKI_URL=http://%s:3100/loki/api/v1/push\\nLOKI_NETWORK=%s\\n' \"$LOKI_CT\" \"$LOKI_NET\" > .env;"
+        "  echo \"observability: shipping to $LOKI_CT on $LOKI_NET\";"
+        "else"
+        # No Loki on this host (the staging twin). Point the shipper at our own network so compose
+        # still resolves, and say so. A missing log shipper must not fail a deploy.
+        "  printf 'LOKI_URL=http://127.0.0.1:3100/loki/api/v1/push\\nLOKI_NETWORK=videodead_appnet\\n' > .env;"
+        "  echo 'observability: no loki container on this host, shipper will idle';"
+        "fi",
         # WHAT ALREADY HOLDS A PORT ON THIS HOST. Printed every deploy, because "8091 is free" was
         # an assumption that survived until the first real deploy and then failed the whole run.
         # This container publishes nothing, so the list is diagnostic rather than load bearing, but

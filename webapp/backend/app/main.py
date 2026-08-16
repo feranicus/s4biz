@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import notify, security_headers, visitors
+from . import alerts, notify, security_headers, visitors
 
 FRONTEND_DIST = os.environ.get("FRONTEND_DIST", "/app/frontend_dist")
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -94,6 +94,7 @@ async def contact(req: Enquiry, request: Request):
     }
     ok = notify.enquiry(rec, DATA_DIR)
     visitors.log(evt="enquiry", ok=ok, company=rec["company"], lang=rec["lang"], ip=ip)
+    alerts.observe_contact(ip, ok)
     if not ok:
         # Nothing was stored AND nothing was delivered. Say so, so the page can tell the visitor to
         # email directly rather than let them believe a message is on its way.

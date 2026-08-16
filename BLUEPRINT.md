@@ -158,17 +158,66 @@ python dnscut.py --lower-ttl     ... wait an hour ...     python ship.py --dns
 
 ---
 
-## 5. What this site deliberately does not have
+## 5. Observability, alerting and the release panel
 
-Stated because their absence looks like an omission against the cybergod blueprint, and it is not.
+The same stack as cybergod, sized for a site with one write endpoint.
+
+### Logs go to the existing Loki and Grafana
+
+`s4biz-promtail` tails `/var/log/s4biz/events.log` off the shared volume and ships it to whichever
+Loki container is running on the box. **The endpoint is discovered, never hardcoded**: the deploy
+asks docker where Loki is and writes `.env` before compose runs, because the network name differs
+between production and a fresh twin.
+
+Two things that keep it from harming the neighbours:
+
+- **Only `evt` and `status` are labels.** Loki creates a stream per label combination, so
+  labelling by path, address or user agent is the standard way to make a shared Loki unusable, and
+  it would be our fault landing on five other projects. Everything else stays in the line.
+- **Positions persist on their own volume.** Without that, every restart re-ships the whole file
+  and Loki rejects the duplicates as out of order, which looks exactly like a broken shipper.
+
+The shipper is the one container here that joins **two** networks, and that is correct: it has to
+reach Loki. The one-network rule exists because the shared proxy dials the *web* container by name
+and would pick one at random. Nothing dials promtail.
+
+### Alerting: `webapp/backend/app/alerts.py`
+
+Four rules, fed from the same point the request is logged so the log and the alerting can never
+disagree: `path_probe` (variety, not volume, so a person with a stale bookmark is not an attack),
+`contact_burst`, `error_burst` (our own 500s, which nothing else on this host would notice) and
+`new_country`. Telegram and email, to the same account as everything else.
+
+**Detection only.** Nothing touches a firewall, nothing refuses a request. Amnezia VPN shares this
+host. Every rule has a per-subject cooldown and there is an hourly cap, because an alert flood is a
+second outage, and the cap **records what it suppressed** rather than muting silently.
+
+### The release panel: `quorum.py`
+
+The same four models, from four different suppliers, for the same reason: no shared rate limit, no
+shared blind spot, no shared outage.
+
+```
+deepseek-3.2      soldier     llama-4-maverick  soldier
+gemma-4-31B-it    auditor     kimi-k2.6         auditor
+```
+
+**They advise; they cannot decide.** It runs LAST, after the deploy has already happened and
+already verified, so a rate-limited model cannot block a good release and an agreeable one cannot
+wave through a broken one. It returns 0 unconditionally. The deterministic facts are the report;
+the models add prose, dissent and a list of what the checks do **not** cover. If all four fail the
+notes still go out and say `0 of 4 answered`.
+
+It runs on the droplet, because that is where the inference key and the Gmail credentials live and
+where they stay.
+
+### Still deliberately absent
 
 - **No database, no backup timer.** Nothing here cannot be regenerated from the repository. An
-  enquiry is appended to a JSON Lines file on a volume before any delivery is attempted, so a mail
-  outage costs a notification and never a lead.
-- **No promtail, no Loki, no dashboards.** Events are written to `/var/log/s4biz/events.log` and
-  shipped nowhere. If that is ever wanted it is a sidecar, not a rewrite.
-- **No shield, no `/api/siege`, no threat intelligence.** There is a bot gate and a set of
-  security headers, and that is the correct amount of machinery for a site with one write endpoint.
+  enquiry is written to disk before any delivery is attempted, so a mail outage costs a
+  notification and never a lead.
+- **No inline shield, no tarpit, no `/api/siege`.** That is right for a system holding customer
+  data behind a login. Here the bot gate plus the four rules above is the proportionate amount.
 - **No GitHub Actions.** The deploy runs from your machine in one session.
 
 ---

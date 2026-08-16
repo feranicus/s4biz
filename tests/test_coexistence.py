@@ -33,6 +33,31 @@ def compose():
     return read(ROOT, "docker-compose.web.yml")
 
 
+def block(text, key, indent=2):
+    """The lines belonging to one top-level-ish key, without a YAML library.
+
+    `yaml` is NOT a declared dependency of this application. It is present transitively through
+    uvicorn[standard], and tests/test_portability.py refuses a transitive import for the same
+    reason the esbuild lesson exists: relying on somebody else's dependency tree is a silent
+    dependency on their packaging decisions.
+
+    This file is ours and its shape is stable, so reading it by indentation is honest and needs
+    nothing installed.
+    """
+    lines = text.splitlines()
+    pad = " " * indent
+    out, inside = [], False
+    for ln in lines:
+        if ln.startswith(pad + key.rstrip(":") + ":") and not ln.startswith(pad + " "):
+            inside = True
+            continue
+        if inside:
+            if ln.strip() and not ln.startswith(pad + " "):
+                break
+            out.append(ln)
+    return "\n".join(out)
+
+
 def test_no_neighbour_container_name_is_reused():
     c = code_only(compose())
     for name in NEIGHBOUR_CONTAINERS:
@@ -85,6 +110,78 @@ def test_health_checks_do_not_assume_a_host_port():
                 "%s probes /api/health but never through docker exec, so it must be assuming a "
                 "published port" % f
             )
+
+
+def test_observability_ships_to_the_existing_stack_and_labels_are_low_cardinality():
+    """One log store for the whole box, and a shipper that cannot make it unusable for the others.
+
+    Loki creates a STREAM PER LABEL COMBINATION. Labelling by path, by IP or by user agent is the
+    standard way to take down a shared Loki, and it would be our fault landing on five other
+    projects. Only `evt` (about eight values) and `status` (a handful) are labels; everything else
+    stays in the line and is filtered at query time.
+    """
+    cfg = read(ROOT, "obs", "promtail.yml")
+    m = re.search(r"-\s*labels:\s*\n((?:\s{10,}[a-z_]+:\s*\n)+)", cfg)
+    assert m, "no labels stage found in the promtail config; this check cannot see its subject"
+    labels = set(re.findall(r"([a-z_]+):", m.group(1)))
+    assert labels, "the labels stage parsed empty"
+    assert labels <= {"evt", "status"}, (
+        "high cardinality label(s) %s would create a Loki stream per value and degrade the shared "
+        "instance for every other project on this host" % sorted(labels - {"evt", "status"})
+    )
+    # Positions must persist, or every restart re-ships the whole file and Loki rejects the
+    # duplicates as out of order, which looks exactly like a broken shipper.
+    assert re.search(r"filename:\s*/positions/", cfg)
+    assert "s4biz_positions" in compose()
+
+    # The Loki endpoint is DISCOVERED on the droplet, never hardcoded to a name that differs
+    # between production and a fresh staging twin.
+    d = code_only(read(ROOT, "deploy_direct.py"))
+    assert "grep -i loki" in d, "the deploy does not discover where Loki actually is"
+
+
+def test_alerting_notifies_and_never_blocks():
+    """Detection only. Amnezia VPN shares this host and the standing rule is that nothing here
+    touches a firewall or refuses a request."""
+    src = code_only(read(ROOT, "webapp", "backend", "app", "alerts.py"))
+    for banned in ("iptables", "nft ", "ufw ", "subprocess", "block(", "deny("):
+        assert banned not in src, "alerts.py reaches for %r. This module reports, it never acts." % banned
+    # A flood of alerts is a second outage, and muting is how the real one gets missed: the cap
+    # has to RECORD what it suppressed.
+    assert "STORM_CAP" in src and "alert_suppressed" in src
+    assert "COOLDOWN" in src
+
+
+def test_the_release_panel_advises_and_cannot_block():
+    """Four suppliers so no single rate limit silences the panel, and it runs AFTER the deploy has
+    already verified, so it is commenting on a decision rather than making one."""
+    src = read(ROOT, "quorum.py")
+    code = code_only(src)
+    m = re.search(r"PANEL = \[([\s\S]*?)\]", code)
+    assert m, "there is no panel"
+    models = re.findall(r'\("([^"]+)"', m.group(1))
+    assert len(models) == 4, "expected four models, found %d" % len(models)
+    vendors = {mm.split("-")[0] for mm in models}
+    assert len(vendors) == 4, (
+        "the panel has %d distinct vendors (%s). Four hats on fewer suppliers share a failure "
+        "domain, which is the whole reason for having four." % (len(vendors), sorted(vendors))
+    )
+    assert "return 0  # NEVER fails the ship" in src, "the review must not be able to fail a deploy"
+
+    # ANCHOR ON THE CALL SITE, NOT THE NAME.
+    #
+    # The first version compared index("do_verify()") against index("quorum.py"), and
+    # `def do_verify():` CONTAINS the substring "do_verify()". So it matched the DEFINITION near
+    # the top of the file, which precedes every quorum mention, and the assertion was true no
+    # matter where the panel actually ran. Proven by mutation: inserting a quorum call before
+    # verification was not caught until this line changed.
+    ship = code_only(read(ROOT, "ship.py"))
+    call = ship.index("verified = do_verify()")
+    first_panel = ship.index("quorum.py")
+    assert call < first_panel, (
+        "the panel runs before verification, so it would be deciding rather than reviewing a "
+        "decision already made"
+    )
 
 
 def test_no_neighbour_volume_is_mounted():

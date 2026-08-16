@@ -366,48 +366,60 @@ def do_verify():
 
 
 def check_certificate():
-    """How many days of certificate are left, measured from OUTSIDE.
+    """How many days of certificate are left, measured from OUTSIDE, PER HOSTNAME.
 
     A LAPSED CERTIFICATE TAKES EVERY DOMAIN ON THE SHARED PROXY DOWN AT THE SAME INSTANT, not just
-    this one. It is also the only outage that arrives on a published schedule, so there is no
-    excuse for being surprised by it.
+    this one. It is also the only outage that arrives on a published schedule.
 
-    Caddy renews at 30 days. Under 10 therefore means renewal has been failing for three weeks and
-    nobody noticed. Under 7 fails the run outright.
+    ONE CERTIFICATE PER HOSTNAME. Caddy's automatic issuance obtains a SEPARATE certificate for
+    each name it serves, so `s4biz.io` and `www.s4biz.io` have their own. The first version of this
+    check read the apex certificate and asserted it also covered www, which is not how Caddy works:
+    it failed the deploy while the browser was loading www over TLS with no warning at all. The
+    site was correct and the check was wrong. Each name is now connected to and judged on its own.
 
-    Stdlib only: ssl and socket. A certificate check that needs a package installed is a check
-    that does not run on the machine invoking it.
+    Caddy renews at 30 days, so under 10 means renewal has been failing for about three weeks.
+    Under 7 fails the run.
+
+    Stdlib only. A certificate check that needs a package installed is a check that does not run on
+    the machine invoking it.
     """
     import socket
     import ssl
     from datetime import datetime, timezone
 
-    try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((DOMAIN, 443), timeout=15) as sock:
-            with ctx.wrap_socket(sock, server_hostname=DOMAIN) as ss:
-                cert = ss.getpeercert()
-        exp = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
-        days = (exp - datetime.now(timezone.utc)).days
-        names = {v for k, v in cert.get("subjectAltName", ()) if k == "DNS"}
-    except Exception as e:
-        # A FAILED LOOKUP IS NOT A FINDING. Report unknown and claim nothing.
-        WARN.append("could not read the certificate (%r). Unknown, not necessarily expired." % (e,))
-        return True
+    ok = True
+    for host in (DOMAIN, "www." + DOMAIN):
+        try:
+            ctx = ssl.create_default_context()
+            with socket.create_connection((host, 443), timeout=15) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                    cert = ss.getpeercert()
+            exp = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z")
+            exp = exp.replace(tzinfo=timezone.utc)
+            days = (exp - datetime.now(timezone.utc)).days
+            names = {v for k, v in cert.get("subjectAltName", ()) if k == "DNS"}
+        except Exception as e:
+            # A FAILED LOOKUP IS NOT A FINDING. Report unknown and claim nothing.
+            WARN.append("could not read the certificate for %s (%r). Unknown, not expired." % (host, e))
+            continue
 
-    say("  certificate     %d days left, covers %s" % (days, ", ".join(sorted(names)) or "?"))
-    for want in (DOMAIN, "www." + DOMAIN):
-        if want not in names:
-            BAD.append("the certificate does not cover %s" % want)
-            return False
-    if days < 7:
-        BAD.append("the certificate expires in %d days. That takes EVERY site on the shared "
-                   "proxy down together, not just this one." % days)
-        return False
-    if days < 10:
-        WARN.append("only %d days of certificate left. Caddy renews at 30, so renewal has been "
-                    "failing for about three weeks." % days)
-    return True
+        # The name we asked for must be on the certificate we were given. That is the real
+        # question, and it is answered per connection rather than by assuming a shared SAN list.
+        covered = host in names or any(
+            n.startswith("*.") and host.endswith(n[1:]) for n in names
+        )
+        say("  certificate     %-14s %3d days, covers %s" % (host, days, ", ".join(sorted(names))))
+        if not covered:
+            BAD.append("the certificate served for %s does not cover that name" % host)
+            ok = False
+        elif days < 7:
+            BAD.append("%s expires in %d days. That takes EVERY site on the shared proxy down "
+                       "together, not just this one." % (host, days))
+            ok = False
+        elif days < 10:
+            WARN.append("%s has only %d days left. Caddy renews at 30, so renewal has been "
+                        "failing for about three weeks." % (host, days))
+    return ok
 
 
 # ---------------------------------------------------------------------------------------------
@@ -511,6 +523,19 @@ def main():
             verified = do_verify() and verified
 
     tag = do_tag() if verified else ""
+
+    # LAST, AND IT CANNOT FAIL THE SHIP. The deploy has already happened and already verified, so
+    # the panel is commenting on a decision rather than making one. A rate-limited model must not
+    # be able to block a good release, and an agreeable one must not be able to wave through a
+    # broken one; both directions are failures, and only the deterministic checks above decide.
+    head("RELEASE REVIEW")
+    try:
+        run([sys.executable, os.path.join(HERE, "quorum.py")], timeout=480,
+            env={**os.environ,
+                 "S4_GATES": "ok" if not BAD else "failed",
+                 "DROPLET_HOST": HOST})
+    except Exception as e:
+        say("  [!] the review could not run (%r). The release is unaffected." % (e,))
 
     head("SUMMARY  (%ds)" % int(time.time() - t0))
     for x in OK:

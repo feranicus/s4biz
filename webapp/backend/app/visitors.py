@@ -147,6 +147,14 @@ def install(app):
 
             response = await call_next(request)
             try:
+                # Feed the alert rules from the SAME point the request is logged, so the log and
+                # the alerting can never disagree about what happened.
+                from . import alerts
+
+                alerts.observe_request(path, response.status_code, client_ip(request), ua=ua)
+            except Exception:
+                pass
+            try:
                 if not path.startswith("/assets/") and path not in EXEMPT_EXACT:
                     log(
                         evt="http",

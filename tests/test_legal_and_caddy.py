@@ -166,18 +166,37 @@ def test_the_deploy_deletes_only_between_the_markers():
         )
 
 
-def test_the_container_joins_exactly_one_network():
-    """Two networks make Docker's DNS hand the proxy a random address, half of them unroutable,
-    which shows up as an intermittent 502 that is very hard to attribute."""
+def test_the_web_container_joins_exactly_one_network():
+    """THE RULE IS ABOUT THE CONTAINER THE PROXY DIALS BY NAME, not about every container.
+
+    On two networks Docker's DNS returns both addresses and the shared proxy picks one at random,
+    so roughly half the requests hit an address it cannot route to. That is an intermittent 502
+    which is very hard to attribute, and it has happened on this host.
+
+    The log shipper is deliberately on two: it must reach Loki, which lives on a neighbour's
+    network. Nothing dials promtail by name, so there is no ambiguity to create. Scoping this
+    check to the web service keeps it able to catch the real defect instead of being widened
+    until it catches nothing.
+    """
+    from test_coexistence import block  # one parser, no YAML dependency
+
     compose = read(ROOT, "docker-compose.web.yml")
-    nets = re.findall(r"networks:\s*\[([^\]]+)\]", compose)
-    assert nets, "the service declares no network"
-    for n in nets:
-        assert len([x for x in n.split(",") if x.strip()]) == 1, (
-            "the container joins more than one network: %s" % n
-        )
-    assert "videodead_appnet" in compose
+    web = block(compose, "web", indent=2)
+    assert web, "the web service block was not found; this check cannot see its subject"
+
+    m = re.search(r"^\s*networks:\s*\[([^\]]*)\]", web, re.M)
+    assert m, "the web service declares no network"
+    nets = [x.strip() for x in m.group(1).split(",") if x.strip()]
+    assert len(nets) == 1, (
+        "the web container joins %d networks (%s). The shared proxy dials it by name and would "
+        "pick one at random, so about half the requests would fail." % (len(nets), ", ".join(nets))
+    )
+    assert nets[0] == "videodead_appnet"
     assert "external: true" in compose
+    assert "container_name: s4biz-web" in web
+    frag = read(ROOT, "deploy", "caddy", "s4biz.caddy")
+    assert "reverse_proxy s4biz-web:8000" in frag
+    assert "promtail" not in frag, "the proxy must never be pointed at the log shipper"
 
 
 def test_the_deploy_never_removes_orphans():

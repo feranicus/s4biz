@@ -1,0 +1,55 @@
+# Ship this site's structured events into the SAME Loki that already serves the other projects on
+# this droplet. One log store, one Grafana, one place to look.
+#
+# WHY A SIDECAR RATHER THAN REUSING THE NEIGHBOUR'S SHIPPER. colt-promtail tails a path inside the
+# colt volumes. Pointing it at ours would mean editing another project's compose file, and their
+# next deploy would silently revert it. A shipper of our own is a few lines and cannot be undone by
+# somebody else's release.
+#
+# WHY A FILE AND NOT DOCKER STDOUT. Never rely on who owns your stdout. The app writes every event
+# to EVENTS_LOG as well as printing it, precisely so that a log shipper has a stable subject: if
+# the process is ever run with its output piped somewhere, a stdout scraper silently stops.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  # On the persistent volume. Without this, every restart re-ships the whole file and Loki
+  # rejects the duplicates as out of order, which looks exactly like a broken shipper.
+  filename: /positions/positions.yaml
+
+clients:
+  - url: ${LOKI_URL:-http://videodead-loki-1:3100/loki/api/v1/push}
+
+scrape_configs:
+  - job_name: s4biz-events
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: s4biz
+          service: s4biz-web
+          host: prod
+          __path__: /logs/events.log
+    pipeline_stages:
+      # The app writes one JSON object per line. Parsing here means Grafana can filter on evt
+      # without a regular expression in every panel.
+      - json:
+          expressions:
+            evt: evt
+            path: path
+            status: status
+            ms: ms
+            rule: rule
+            ok: ok
+      # LABELS ARE LOW CARDINALITY ONLY. `evt` has about eight values and `status` a handful.
+      # Labelling by path or by IP would create a stream per value and is the standard way to make
+      # a Loki instance unusable for everybody else sharing it.
+      - labels:
+          evt:
+          status:
+      - timestamp:
+          source: ts
+          format: RFC3339
+          # A line without a parseable timestamp keeps the ingest time rather than being dropped.
+          action_on_failure: fudge

@@ -74,6 +74,11 @@ def test_no_test_imports_a_library_the_app_does_not_declare():
             for n in names:
                 if n in stdlib or n in ALLOWED or n in declared:
                     continue
+                # A sibling module in tests/ IS part of this repository. The rule is about
+                # depending on somebody else's package, not about sharing a helper between two of
+                # our own files, and a guard that forbids that pushes people to duplicate code.
+                if os.path.exists(os.path.join(TESTS, n + ".py")):
+                    continue
                 bad.append("%s imports %s" % (os.path.basename(p), n))
     assert not bad, (
         "a test imports something that is neither standard library, nor a declared dependency, "

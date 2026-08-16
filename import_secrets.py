@@ -42,6 +42,24 @@ USER = os.environ.get("DROPLET_USER", "root")
 KEY = os.environ.get("SSH_KEY", "")
 
 SOURCE = os.environ.get("SECRET_SOURCE", "/opt/colt-stack/assess-bot/.env")
+
+# WHERE ELSE TO LOOK, and why this list exists.
+#
+# `ALERT_TG_CHAT` is not in the assessment platform's env file: that project leaves it empty and
+# alerts every authenticated operator instead, which is a mechanism this site does not have. So
+# the first run reported it MISSING and told the operator to "re-run after the deploy", which was
+# wrong and unactionable, because re-running could never find a key that is not there.
+#
+# The chat id IS on the droplet, under a different name, in a sibling project. Rather than ask for
+# it to be pasted, look for it. A chat id is an identifier rather than a credential, but it is
+# still read on the droplet and never printed.
+FALLBACKS = {
+    "ALERT_TG_CHAT": [
+        ("/opt/jobhuntwow/agent/.env", "TELEGRAM_CHAT_ID"),
+        ("/opt/jhw/agent/.env", "TELEGRAM_CHAT_ID"),
+        ("/opt/colt-stack/assess-bot/.env", "ALERT_TG_CHAT"),
+    ],
+}
 DEST = "/opt/s4biz-stack/s4biz.env"
 CONTAINER = "s4biz-web"
 
@@ -101,6 +119,23 @@ def remote_script(show_only: bool) -> str:
         % forbidden,
     ]
 
+    # Fill anything the primary store does not have from a named sibling file, under OUR key name.
+    for want, sources in FALLBACKS.items():
+        lines.append("if ! grep -q '^%s=' \"$TMP\"; then" % want)
+        for path, srckey in sources:
+            lines.append(
+                "  if [ -z \"$(grep -c '^%s=' \"$TMP\" | grep -v 0)\" ] && [ -f '%s' ]; then"
+                "    V=\"$(grep -m1 '^%s=' '%s' | cut -d= -f2-)\";"
+                "    if [ -n \"$V\" ]; then printf '%s=%%s\\n' \"$V\" >> \"$TMP\";"
+                "      printf '   take %-18s %%s chars (from %s)\\n' \"${#V}\";"
+                "    fi; fi" % (want, path, srckey, path, want, want, path)
+            )
+        lines.append(
+            "  grep -q '^%s=' \"$TMP\" || printf '   %-18s NOT ON THIS HOST (optional)\\n' '%s';"
+            % (want, want, want)
+        )
+        lines.append("fi")
+
     if show_only:
         lines += ["rm -f \"$TMP\"", "echo 'SHOW_ONLY: nothing was written'", ""]
         return "\n".join(lines)
@@ -135,7 +170,13 @@ def remote_script(show_only: bool) -> str:
         "  for k in %s; do" % " ".join(WANTED),
         "    n=$(docker exec %s sh -c \"printenv $k 2>/dev/null | wc -c\" || echo 0);" % CONTAINER,
         "    if [ \"$n\" -gt 1 ]; then printf '   %-18s present (%s chars)\\n' \"$k\" \"$((n-1))\";"
-        "    else printf '   %-18s MISSING\\n' \"$k\"; fi; done",
+        # NOT_ON_HOST, not MISSING. A key that does not exist anywhere on this droplet cannot be
+        # fixed by re-running, and telling the operator to re-run was a wrong and unactionable
+        # instruction. Distinguish "we could not find it" from "it did not reach the container".
+        "    elif ! grep -q \"^$k=\" \"%s\" 2>/dev/null; then"
+        "      printf '   %%-18s NOT ON THIS HOST (optional, set it once if you want it)\\n' \"$k\";"
+        "    else printf '   %%-18s MISSING (in the file, not in the container)\\n' \"$k\"; fi; done"
+        % DEST,
         "fi",
         "",
     ]
@@ -176,8 +217,14 @@ def main():
     if r.returncode:
         print("[X] the remote step failed (see above).")
         return 1
-    if not show and "MISSING" in out:
-        print("[!] at least one key did not reach the running container. Re-run after the deploy.")
+    if not show and "MISSING (in the file" in out:
+        print("[!] a key is in the file but not in the container. Re-run after the deploy.")
+        return 2
+    if not show and "NOT ON THIS HOST" in out:
+        print("[!] an optional key does not exist anywhere on this droplet. Nothing to re-run:")
+        print("    set it once if you want it, for example")
+        print("      ssh root@%s \"echo 'ALERT_TG_CHAT=<your chat id>' >> %s\"" % (HOST, DEST))
+        print("    Everything else was imported and the site is unaffected.")
         return 2
     return 0
 

@@ -62,10 +62,38 @@ services:
     networks: [videodead_appnet]
     restart: unless-stopped
 
+  # ---- log shipper -------------------------------------------------------------------------
+  # Sends this site's events into the SAME Loki the other projects on this box already use, so
+  # there is one place to look rather than a second observability stack.
+  #
+  # It joins TWO networks and that is correct here, unlike the web container: it needs to reach
+  # Loki, which lives on the neighbour's network. The one-network rule exists because the shared
+  # PROXY dials the web container by name and would pick a random address. Nothing dials promtail,
+  # so there is no ambiguity to create.
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: s4biz-promtail
+    command: -config.file=/etc/promtail/config.yml -config.expand-env=true
+    environment:
+      - LOKI_URL=${LOKI_URL:-http://videodead-loki-1:3100/loki/api/v1/push}
+    volumes:
+      - ./obs/promtail.yml:/etc/promtail/config.yml:ro
+      - s4biz_events:/logs:ro
+      - s4biz_positions:/positions
+    networks: [videodead_appnet, lokinet]
+    restart: unless-stopped
+    depends_on: [web]
+
 volumes:
   s4biz_data: {}
   s4biz_events: {}
+  s4biz_positions: {}
 
 networks:
   videodead_appnet:
     external: true
+  # The network Loki is on. Named through a variable because it differs between the production box
+  # and a fresh staging twin; the deploy discovers it and writes .env before compose runs.
+  lokinet:
+    external: true
+    name: ${LOKI_NETWORK:-videodead_appnet}
