@@ -74,10 +74,11 @@ def test_no_test_imports_a_library_the_app_does_not_declare():
             for n in names:
                 if n in stdlib or n in ALLOWED or n in declared:
                     continue
-                # A sibling module in tests/ IS part of this repository. The rule is about
-                # depending on somebody else's package, not about sharing a helper between two of
-                # our own files, and a guard that forbids that pushes people to duplicate code.
-                if os.path.exists(os.path.join(TESTS, n + ".py")):
+                # A module that is a FILE IN THIS REPOSITORY is part of this repository, whether it
+                # sits in tests/ or at the root. The rule is about depending on somebody else's
+                # package, not about a test importing the very script it exists to test, and a
+                # guard that forbids that pushes people to re-implement the code they are checking.
+                if any(os.path.exists(os.path.join(d, n + ".py")) for d in (TESTS, ROOT)):
                     continue
                 bad.append("%s imports %s" % (os.path.basename(p), n))
     assert not bad, (
@@ -177,6 +178,42 @@ def test_no_deploy_script_writes_a_payload_into_argv():
     assert "text=True" not in m.group(0), (
         "text=True on the ssh call rewrites \\n into \\r\\n on Windows and feeds bash a CRLF "
         "script, which fails with \"$'\\r': command not found\""
+    )
+
+
+def test_the_dirty_path_report_names_the_real_path():
+    """A diagnostic that misreports a path sends the next investigation down the wrong road.
+
+    `git status --porcelain` is "XY <path>", and the first column is a SPACE for a file modified
+    but not staged. The helper that runs git strips the whole output, which removes that space
+    from the first line only, so a fixed-column slice ate one character of the FIRST path and left
+    every other path correct. " M deploy_direct.py" was reported as "eploy_direct.py".
+
+    Exercises the real function against the real shape rather than re-implementing the parse.
+    """
+    import subprocess as sp
+    import sys as _sys
+
+    _sys.path.insert(0, ROOT)
+    import deploy_direct
+
+    sample = " M deploy_direct.py\n M tests/test_coexistence.py\nA  obs/promtail.yml\n"
+
+    class _R:
+        returncode = 0
+        stdout = sample
+        stderr = ""
+
+    real = sp.run
+    try:
+        sp.run = lambda *a, **k: _R()
+        _, _, dirty = deploy_direct._tree_state()
+    finally:
+        sp.run = real
+
+    assert dirty == ["deploy_direct.py", "tests/test_coexistence.py", "obs/promtail.yml"], (
+        "the dirty-path parse is wrong: %r. The FIRST entry is the one that breaks, because the "
+        "leading status space is stripped from the first line only." % (dirty,)
     )
 
 

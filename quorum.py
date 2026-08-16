@@ -122,6 +122,12 @@ def facts(extra=None):
 
 def remote(payload_json, dry=False):
     """Ask the panel and send the notes, entirely on the droplet."""
+    # THE PANEL RUNS IN OUR OWN CONTAINER, because it now holds the inference key.
+    #
+    # An earlier version executed this inside the neighbour's container to avoid granting the key
+    # here. It worked, and it made every release review depend on another project's container
+    # being up and keeping its name. The key is imported to this site now, so the indirection
+    # bought nothing and cost a dependency.
     script = r'''
 set -e
 cat > /tmp/s4_facts.json
@@ -200,6 +206,26 @@ PY
         return r.returncode, r.stdout.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         return 1, "the panel did not answer within 7 minutes"
+
+
+def parse_reviews(text):
+    """Pull the per-model verdicts back out of the panel output.
+
+    The remote script prints a line per reviewer as `  [role] model  VERDICT`. Parsing that rather
+    than returning JSON keeps ONE format: what the operator reads in the log is exactly what the
+    gate reasons about, so the two can never describe different runs.
+    """
+    import re
+
+    out = []
+    for ln in (text or "").splitlines():
+        m = re.match(r"\s*\[(soldier|auditor)\]\s+(\S+)\s+(GO|NO-GO|UNSURE|no answer)", ln)
+        if m:
+            out.append({"role": m.group(1), "model": m.group(2),
+                        "verdict": "" if m.group(3) == "no answer" else m.group(3)})
+        elif out and ln.strip().startswith("! "):
+            out[-1].setdefault("risks", []).append(ln.strip()[2:])
+    return out
 
 
 def main(extra=None, dry=False):

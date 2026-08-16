@@ -1,0 +1,36 @@
+# Static analysis of our own code, weekly and on every push to the main branch.
+#
+# Different question from the image scan. Trivy asks "does a dependency have a known
+# vulnerability"; this asks "did we write one". Neither substitutes for the other.
+name: codeql
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Weekly, because a rule set improves over time and code that was clean last month can be
+    # flagged this month without anybody touching it.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          language: ${{ matrix.language }}
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

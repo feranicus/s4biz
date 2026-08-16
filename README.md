@@ -24,10 +24,34 @@ Everything else in this folder is a building block that `ship.py` calls. You sho
 run one directly, and if a reply about this project ever ends with two `python ...` lines, that is
 a defect to fold back into `ship.py`.
 
+### The lifecycle, in order
+
+```
+1/8  CHECKS            74 python tests, 4 frontend gates
+2/8  PREVIEW           has this exact frontend been looked at
+3/8  GIT               commit and PUSH to github.com/feranicus/s4biz
+4/8  TEST DROPLET      deploy -> smoke -> REBOOT -> smoke -> four-model gate -> GO or NO-GO
+5/8  PRODUCTION        only if the gate said GO
+6/8  SECRETS           reused from the droplet's existing store
+7/8  VERIFY            from your machine, not the droplet
+8/8  SAFE POINT        tag last-known-good and a dated tag, push both
+     RELEASE NOTES     four models, Telegram and email
+```
+
+**Production is never the first place a change runs.** The test droplet gets it, is rebooted, and
+has to pass every smoke test again. The reboot is the point: configuration valid on disk and never
+loaded is invisible until something restarts, which is how a config damaged at 16:15 took every
+domain on this host down at 04:22 the next morning.
+
+GitHub also runs the same checks where nobody can skip them: `ci.yml` (gitleaks over full history,
+ruff F-rules, pytest, all frontend gates, docker build, pinned and checksum-verified Trivy with
+CRITICAL failing the build), `codeql.yml`, and `uptime.yml` probing from outside every ten minutes.
+
 | flag | what it narrows |
 |---|---|
 | `python ship.py --test` | run the checks and stop |
-| `python ship.py --stage` | validate on the staging twin, **reboot it**, then production |
+| `python ship.py --no-stage` | skip the test droplet, deliberately |
+| `python ship.py --fast-stage` | test droplet without the reboot (weaker, and it says so) |
 | `python ship.py --dns` | also move s4biz.io off Tilda onto the droplet |
 | `python ship.py --rollback` | reset to the last known good commit and redeploy that exact state |
 | `python ship.py --no-preview` | skip the have-you-looked gate, deliberately |

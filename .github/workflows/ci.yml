@@ -1,0 +1,102 @@
+# Every push and every pull request. This is the copy of the checks that runs where NOBODY can
+# skip it, on a toolchain installed from scratch.
+#
+# `python ship.py` runs the same things locally, and that is the fast feedback loop. This exists
+# because a local gate can be bypassed with a flag, a stale node_modules, or an operator in a
+# hurry, and because GitHub is the source of truth for the code.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: no secrets in the history
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs the HISTORY, not a shallow copy. A secret removed in the latest commit
+          # is still a leaked secret, and scanning only the tip would report a clean repository.
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  python:
+    name: python checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install
+        run: pip install -r webapp/backend/requirements.txt pytest ruff
+      # F-RULES ONLY, and that is deliberate. F821 (undefined name) is the rule that catches an
+      # outage: a typo'd identifier is legal Python until the line runs, and one shipped to
+      # production on the sibling project and crashed every request. Style rules are not worth
+      # failing a build over, and F401 (unused import) is excluded because it is not a defect.
+      - name: ruff, real bugs only
+        run: ruff check --select F821,F811,F822,F823 --exclude webapp/frontend .
+      - name: pytest
+        run: python -m pytest -q tests
+
+  frontend:
+    name: frontend gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # A FRESH INSTALL, on linux/amd64. npm ships per-platform binaries as optional dependencies,
+      # so the gates cannot be trusted against whatever node_modules an operator's machine happens
+      # to hold. Here the toolchain is correct by construction.
+      - run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+      - run: node tools/i18n_gate.mjs
+      - run: node tools/layout_gate.mjs
+      - run: node tools/contrast_gate.mjs
+      - run: node tools/render_gate.mjs
+      - run: npm run build
+      - run: node tools/shipped_shell.mjs
+
+  image:
+    name: image builds and scans clean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: docker build -f webapp/Dockerfile -t s4biz-web:ci .
+      # THE SCANNER IS A SUPPLY-CHAIN DEPENDENCY LIKE ANY OTHER, and this one was compromised in
+      # early 2026: a poisoned release dumped runner memory. So it is PINNED, and the tarball is
+      # checksum-verified against the signed list BEFORE it is executed. Installing from a moving
+      # branch inside a job that holds credentials is exactly the mechanism that incident used.
+      - name: install trivy, pinned and verified
+        run: |
+          V=0.69.3
+          B=https://github.com/aquasecurity/trivy/releases/download/v$V
+          curl -sfLO $B/trivy_${V}_Linux-64bit.tar.gz
+          curl -sfLO $B/trivy_${V}_checksums.txt
+          grep " trivy_${V}_Linux-64bit.tar.gz$" trivy_${V}_checksums.txt | sha256sum -c -
+          tar xzf trivy_${V}_Linux-64bit.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+      - name: high, reported
+        run: trivy image --scanners vuln --severity HIGH --ignore-unfixed --exit-code 0
+             --skip-version-check --timeout 10m s4biz-web:ci
+      # CRITICAL AND FIXABLE FAILS THE BUILD. A scanner nobody gates on is a log file with a
+      # licence. --ignore-unfixed because failing on something with no available patch teaches
+      # people to ignore the result.
+      - name: critical, fails
+        run: trivy image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1
+             --skip-version-check --timeout 10m s4biz-web:ci

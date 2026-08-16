@@ -10,6 +10,7 @@ staging box that has no shared proxy to publish into.
 """
 import base64
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -34,7 +35,14 @@ SSH = ["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "LogLevel=ERROR"] 
 if KEY and os.path.exists(KEY):
     SSH += ["-i", KEY]
 
-INCLUDE = ["webapp", "docker-compose.web.yml", "deploy", ".dockerignore"]
+# EVERYTHING THE DROPLET NEEDS. A path missing from here is not packed, and the failure is
+# confusing rather than obvious: docker creates a DIRECTORY where a bind mount's source file
+# should be, and the container dies with "not a directory: are you trying to mount a directory
+# onto a file". That is what happened when obs/ was added and this list was not.
+#
+# tests/test_coexistence.py now derives the requirement from the compose file, so a new bind
+# mount whose source is not packed fails the suite instead of the deploy.
+INCLUDE = ["webapp", "docker-compose.web.yml", "deploy", "obs", ".dockerignore"]
 EXCLUDE = {"node_modules", "__pycache__", "dist", ".git", ".pytest_cache", "ssrtmp"}
 
 
@@ -49,10 +57,26 @@ def _tree_state():
                            encoding="utf-8", errors="replace", timeout=30)
         return (r.stdout or "").strip() if r.returncode == 0 else ""
     sha = g("rev-parse", "--short", "HEAD")
-    # `git status --porcelain` is "XY <path>": the path starts at column 3, and slicing at 2 turns
-    # "deploy_direct.py" into "eploy_direct.py". A diagnostic that misreports a path sends the next
-    # investigation down the wrong road.
-    dirty = [ln[3:].strip() for ln in g("status", "--porcelain").splitlines() if ln.strip()]
+
+    # `git status --porcelain` is "XY <path>", and the FIRST status column is a space for a file
+    # that is modified but not staged. The helper above strips the whole output, which removes that
+    # leading space from the FIRST LINE ONLY. Slicing at a fixed column then ate one character of
+    # the first path and left every other path correct, which is exactly the shape of bug that
+    # survives a glance: " M deploy_direct.py" was reported as "eploy_direct.py".
+    #
+    # So do not slice by position at all. Read the raw output and match the two status columns
+    # explicitly. A diagnostic that misreports a path sends the next investigation down the wrong
+    # road, and this one did.
+    try:
+        raw = subprocess.run(["git", "status", "--porcelain"], cwd=HERE, capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=30).stdout or ""
+    except Exception:
+        raw = ""
+    dirty = []
+    for ln in raw.splitlines():
+        m = re.match(r"^(..) (.+)$", ln)
+        if m:
+            dirty.append(m.group(2).strip())
     return (not dirty), sha, dirty
 
 
@@ -313,7 +337,19 @@ def main():
         blob,
         "B64EOF",
         "echo '== unpack on the droplet =='",
+        # CLEAR ANY PHANTOM DIRECTORY DOCKER LEFT BEHIND.
+        #
+        # When a bind mount's source file is absent, docker helpfully creates a DIRECTORY at that
+        # path. tar then cannot extract the real file over it, so the next deploy fails in the same
+        # way as the first and the cause looks permanent. rmdir only removes an EMPTY directory,
+        # so this can never destroy anything real.
+        "for f in obs/promtail.yml; do [ -d \"%s/$f\" ] && rmdir \"%s/$f\" 2>/dev/null || true; done"
+        % (REMOTE_DIR, REMOTE_DIR),
         "tar xzf /tmp/s4biz-src.tgz -C %s && rm -f /tmp/s4biz-src.tgz" % REMOTE_DIR,
+        # Prove the bind sources arrived, BEFORE compose tries to mount them. A missing file here
+        # produces a runtime error three steps later that names mounts rather than packing.
+        "for f in docker-compose.web.yml obs/promtail.yml deploy/caddy/s4biz.caddy; do"
+        "  [ -f \"%s/$f\" ] || { echo \"MISSING_AFTER_UNPACK $f\"; exit 1; }; done" % REMOTE_DIR,
         remote(proxy),
         "",
     ])
@@ -338,6 +374,13 @@ def main():
                  "    Usually a base image bump in webapp/Dockerfile. If it is genuinely accepted\n"
                  "    risk, add the identifier to .trivyignore WITH A REASON AND A DATE. An\n"
                  "    allowlist without a reason is a disabled scanner wearing a hat.")
+    if "MISSING_AFTER_UNPACK" in out:
+        missing = [ln for ln in out.splitlines() if "MISSING_AFTER_UNPACK" in ln]
+        sys.exit("[X] a file the compose file needs was not shipped:\n    %s\n\n"
+                 "    Add its top level directory to INCLUDE in this script. A bind mount whose\n"
+                 "    source is missing makes docker create a DIRECTORY there, and the container\n"
+                 "    then dies complaining about mounting a directory onto a file."
+                 % "\n    ".join(missing))
     if "NO_CADDY_CONTAINER" in out or "NO_CADDYFILE_MOUNT" in out:
         sys.exit("[X] could not find the shared caddy container or its Caddyfile mount.")
     if proxy and "public via caddy = 200" not in out:

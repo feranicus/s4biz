@@ -102,14 +102,84 @@ def test_no_host_port_is_published_at_all():
 def test_health_checks_do_not_assume_a_host_port():
     """Every local probe has to work without a published port, or removing it silently breaks the
     deploy's own verification and the staging reboot test."""
-    for f in ("deploy_direct.py", "ship.py", "import_secrets.py"):
+    # THE PROPERTY IS "NO LOOPBACK PROBE", not "every probe uses docker exec".
+    #
+    # The first version demanded `docker exec` in any file mentioning /api/health, and it failed
+    # ship.py, which probes the PUBLIC https URL from outside. That needs no host port and is
+    # exactly the check that has to run from the operator's machine, because the droplet's own
+    # monitoring sits behind the proxy it would be reporting on. A rule stated too broadly fails
+    # correct code and teaches people to widen it until it catches nothing.
+    for f in ("deploy_direct.py", "ship.py", "import_secrets.py", "stagegate.py"):
         src = code_only(read(ROOT, f))
-        assert "127.0.0.1:8091" not in src, "%s still probes the old host port" % f
-        if "/api/health" in src:
-            assert "docker exec" in src, (
-                "%s probes /api/health but never through docker exec, so it must be assuming a "
-                "published port" % f
+        # Only loopback URLs that are actually PROBING THIS APP. `127.0.0.1:3100` appears as the
+        # deliberately-unreachable Loki placeholder written into .env on a host with no Loki, so
+        # that compose still resolves; it is not a health check and matching it made this fail a
+        # correct file.
+        hits = re.findall(r"(?:127\.0\.0\.1|localhost):(\d+)/api/", src)
+        for port in hits:
+            assert port == "8000", (
+                "%s probes 127.0.0.1:%s. This container publishes NO host port, so a loopback "
+                "probe on anything but the in-container port 8000 is assuming one." % (f, port)
             )
+        # And an in-container probe has to actually be inside the container.
+        if "127.0.0.1:8000" in src:
+            assert "docker exec" in src, (
+                "%s probes the container port from the host without docker exec" % f
+            )
+
+
+def test_every_bind_mount_source_is_actually_shipped():
+    """A file the compose file mounts must be in the deploy's pack manifest.
+
+    THIS IS THE CHECK THAT WOULD HAVE SAVED A DEPLOY. `obs/promtail.yml` was added as a bind mount
+    and `obs` was not added to INCLUDE, so it was never packed. Docker's behaviour when a bind
+    source is missing is to CREATE A DIRECTORY at that path, and the container then fails with
+    "not a directory: are you trying to mount a directory onto a file", which points at mounts
+    rather than at packing and reads like a docker problem.
+
+    Derived from the compose file rather than restated, so a new mount is covered automatically.
+    """
+    sources = re.findall(r"^\s*-\s+\./([^:\s]+):", compose(), re.M)
+    assert sources, "no relative bind mounts parsed; this check cannot see its subject"
+
+    d = read(ROOT, "deploy_direct.py")
+    m = re.search(r"INCLUDE = \[([^\]]*)\]", d)
+    assert m, "deploy_direct.py has no INCLUDE list"
+    included = set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    for src in sources:
+        assert os.path.exists(os.path.join(ROOT, src)), (
+            "%s is mounted by the compose file and does not exist in the repository" % src
+        )
+        top = src.split("/")[0]
+        assert top in included or src in included, (
+            "the compose file mounts ./%s but %r is not in INCLUDE, so it is never shipped. "
+            "Docker will create a directory at that path and the container will fail with a "
+            "confusing mount error." % (src, top)
+        )
+
+
+def test_the_droplet_proves_the_files_arrived_before_compose_runs():
+    """Belt to the pack-manifest check's braces, on the other side of the wire.
+
+    The manifest test catches a file missing from INCLUDE. This catches anything that goes wrong
+    between packing and unpacking, and it fails with the FILENAME rather than with docker's
+    "not a directory" three steps later, which points at mounts instead of at packing.
+    """
+    d = code_only(read(ROOT, "deploy_direct.py"))
+    assert "MISSING_AFTER_UNPACK" in d, (
+        "the remote script no longer verifies that the bind sources arrived before compose tries "
+        "to mount them"
+    )
+    # And the marker has to be CONSUMED, not merely printed. A marker nobody reads is decoration,
+    # which is the exact defect the Trivy verdict handling exists to avoid.
+    assert d.count("MISSING_AFTER_UNPACK") >= 2, (
+        "the marker is emitted but never checked by the caller, so a missing file would still "
+        "reach compose"
+    )
+    # And a phantom directory left by a previous failure must be cleared, or the SAME deploy fails
+    # forever and the cause looks permanent.
+    assert "rmdir" in d, "a directory docker created at a bind-mount path is never cleaned up"
 
 
 def test_observability_ships_to_the_existing_stack_and_labels_are_low_cardinality():
@@ -217,26 +287,17 @@ def test_the_deploy_joins_the_managed_caddy_regime():
 
 
 def test_secrets_are_reused_not_copied_into_the_repository():
-    """The droplet already holds a working secret store. Nothing is minted, pasted or committed."""
-    src = read(ROOT, "import_secrets.py")
-    code = code_only(src)
+    """The droplet already holds a working secret store. Nothing is minted, pasted or committed.
 
-    # The allow-list IS the security boundary, so it is asserted rather than assumed.
-    m = re.search(r"WANTED = \[([^\]]*)\]", code)
-    assert m, "there is no allow-list"
-    wanted = set(re.findall(r'"([^"]+)"', m.group(1)))
-    assert wanted == {"GMAIL_SENDER", "GMAIL_SA_B64", "BOT_TOKEN", "ALERT_TG_CHAT"}, (
-        "the allow-list has changed to %s. A marketing site has no business holding an inference "
-        "key or a shared access password: widening this is how a low value system becomes the "
-        "easiest route into a high value one." % sorted(wanted)
-    )
-
-    m = re.search(r"FORBIDDEN = \[([^\]]*)\]", code)
-    assert m, "there is no forbidden list"
-    forbidden = set(re.findall(r'"([^"]+)"', m.group(1)))
-    for must in ("SHODAN_API_KEY", "OPENAI_API_KEY", "COLT_BOT_PASSWORD"):
-        assert must in forbidden, "%s is not on the forbidden list" % must
-    assert not (wanted & forbidden), "a key is on both lists"
+    THE ALLOW-LIST ITSELF IS ASSERTED IN tests/test_lifecycle.py, not here. It used to be checked
+    in both files, and when it was widened for the release panel the two disagreed: one test
+    passed and the other failed on the same correct change. Two homes for one assertion is the
+    defect this codebase keeps paying for, in tests as much as in code.
+    """
+    code = code_only(read(ROOT, "import_secrets.py"))
+    assert "WANTED" in code and "FORBIDDEN" in code, "the filter is gone entirely"
+    # The copy must remain a SUBSET of the shared file, never the whole thing.
+    assert "grep -E" in code, "the copy is no longer key-filtered"
 
 
 def test_no_secret_value_can_reach_this_machine_or_the_repository():

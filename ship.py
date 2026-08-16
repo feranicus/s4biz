@@ -13,7 +13,8 @@ the second one in here instead.
 
 Flags NARROW it, they never split it:
     --test          run the checks and stop
-    --stage         deploy to the staging twin first, reboot it, and only then production
+    --no-stage      skip the test droplet, deliberately
+    --fast-stage    validate on the test droplet but skip the reboot (weaker)
     --dns           also move s4biz.io DNS from Tilda to the droplet (needs a GoDaddy key once)
     --no-preview    skip the "have you looked at it" gate, deliberately
     --rollback      reset to the last known good commit and redeploy that exact state
@@ -87,7 +88,7 @@ def git(*a, timeout=120):
 # 1/6  CHECKS
 # ---------------------------------------------------------------------------------------------
 def do_tests():
-    head("1/6  CHECKS")
+    head("1/8  CHECKS")
     ok = True
 
     # Python. A test suite the operator waits through is a test suite that gets skipped, so this
@@ -128,7 +129,7 @@ def do_tests():
 # 2/6  DID ANYONE LOOK AT IT
 # ---------------------------------------------------------------------------------------------
 def do_preview_gate(skip):
-    head("2/6  HAS THIS FRONTEND BEEN LOOKED AT")
+    head("2/8  HAS THIS FRONTEND BEEN LOOKED AT")
     if skip:
         say("  skipped deliberately (--no-preview)")
         return True
@@ -159,17 +160,53 @@ def do_preview_gate(skip):
 # ---------------------------------------------------------------------------------------------
 # 3/6  GIT
 # ---------------------------------------------------------------------------------------------
+REMOTE_URL = os.environ.get("S4_GIT_REMOTE", "https://github.com/feranicus/s4biz.git")
+
+
 def do_git(message):
-    head("3/6  GIT")
+    head("3/8  GIT: GITHUB IS THE SOURCE OF TRUTH")
+
+    # A STALE LOCK SILENTLY STOPS EVERY COMMIT, AND THE DEPLOY THEN SHIPS OLD CODE.
+    #
+    # git leaves .git/index.lock behind when a process is killed, and every later `git add` fails
+    # with "Another git process seems to be running". ship.py reported "commit failed" as a
+    # warning and carried on, and because the deploy packs the COMMIT rather than the working
+    # tree, two runs shipped code that no longer matched the repository. The panel fix in
+    # particular was written, tested, and never left this machine.
+    #
+    # Only remove it when nothing is actually holding it: a lock younger than two minutes might be
+    # a real concurrent git, and deleting that would corrupt an index.
+    lock = os.path.join(HERE, ".git", "index.lock")
+    if os.path.exists(lock):
+        age = time.time() - os.path.getmtime(lock)
+        if age > 120:
+            try:
+                os.remove(lock)
+                say("  removed a stale index.lock (%d minutes old, no git was running)" % (age // 60))
+            except OSError as e:
+                BAD.append("could not remove the stale git lock: %r" % (e,))
+        else:
+            BAD.append("git is locked by another process (%ds old). Wait, then re-run." % age)
+            return
+
     rc, _ = git("rev-parse", "--git-dir")
     if rc:
         say("  no git repository here, initialising one")
         run(["git", "init"])
         run(["git", "add", "-A"])
         run(["git", "commit", "-m", message or "S4Biz site: initial commit"])
-        say("  [!] no remote is configured, so nothing is pushed. Add one when you have it:")
-        say("      git remote add origin <url> && git push -u origin main")
-        return
+
+    # THE REMOTE IS CONFIGURED HERE, NOT BY HAND.
+    #
+    # A repository whose remote depends on somebody remembering a one-off command is a repository
+    # that silently stops being backed up. If it is missing, add it; if it points somewhere else,
+    # say so rather than overwrite, because that is a decision the operator has to make.
+    rc, cur = git("remote", "get-url", "origin")
+    if rc or not cur.strip():
+        say("  adding origin -> %s" % REMOTE_URL)
+        git("remote", "add", "origin", REMOTE_URL)
+    elif cur.strip() != REMOTE_URL:
+        WARN.append("origin is %s, not %s. Left alone." % (cur.strip(), REMOTE_URL))
 
     _, status = git("status", "--porcelain")
     if status.strip():
@@ -187,19 +224,25 @@ def do_git(message):
     # A push that only happens when THIS run made a commit means commits created any other way
     # never reach the remote, and the local machine silently drifts ahead of it. Push is
     # idempotent; skipping it breaks the promise that the remote is the source of truth.
-    rc, out = git("remote")
-    if not out.strip():
-        say("  [!] no git remote configured, so there is nothing to push to yet.")
-        return
-    rc, _ = git("rev-parse", "--abbrev-ref", "HEAD")
+    branch = (git("rev-parse", "--abbrev-ref", "HEAD")[1] or "master").strip()
     rc, ahead = git("rev-list", "--count", "@{u}..HEAD")
     if not rc and ahead.strip().isdigit() and int(ahead.strip()):
-        say("  %s local commit(s) not on the remote" % ahead.strip())
-    rc = run(["git", "push"], timeout=180)
+        say("  %s local commit(s) not yet on GitHub" % ahead.strip())
+
+    say("  pushing %s to origin" % branch)
+    rc = run(["git", "push", "-u", "origin", branch], timeout=300)
     if rc:
-        WARN.append("push failed (the deploy packs the local commit, so this is not fatal)")
+        # NOT FATAL, but loud. The deploy packs the local COMMIT, so production still gets exactly
+        # what was tested. What is lost is the backup and the shared history, which matters the day
+        # this machine dies rather than today.
+        BAD.append("the push to GitHub FAILED. The code exists only on this machine.")
+        say()
+        say("      GitHub is meant to be the source of truth, and right now it is not.")
+        say("      Usually this is authentication. Either:")
+        say("          gh auth login                      (then re-run)")
+        say("          git push -u origin %s      (to see the real error)" % branch)
     else:
-        OK.append("pushed")
+        OK.append("pushed to GitHub")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -214,49 +257,38 @@ def deploy(host, proxy=True):
     return run(cmd, timeout=1800, env=env)
 
 
-def do_stage():
-    head("4/6  STAGING TWIN")
-    say("  deploying to %s, then REBOOTING it." % STAGING)
-    say("  The reboot is the point. Configuration that is valid on disk and never loaded is")
-    say("  invisible until something restarts, and that is how a latent break becomes an outage")
-    say("  hours later with no obvious cause.")
-    if deploy(STAGING, proxy=False):
-        BAD.append("staging deploy failed")
+def do_stage(fast=False):
+    """The test droplet. DEFAULT, not optional.
+
+    Deploy, smoke test, REBOOT, smoke test again, then four models review the result. Production
+    is not touched unless the gate says GO. All of that lives in stagegate.py, which is a pure
+    decision function plus some ssh; this only reports and decides what to do next.
+    """
+    head("4/8  TEST DROPLET  %s" % STAGING)
+    try:
+        sys.path.insert(0, HERE)
+        import stagegate
+
+        gate, dg = stagegate.run(reboot_test=not fast)
+    except Exception as e:
+        # A BROKEN GATE MUST NOT BECOME A BROKEN DEPLOY, but it must not silently wave things
+        # through either. Report it and stop: this is the step that protects production.
+        BAD.append("the staging gate could not run (%r)" % (e,))
         return False
 
-    tgt = "%s@%s" % (USER, STAGING)
-    rc, before = capture(SSH + [tgt, "cat /proc/sys/kernel/random/boot_id"], timeout=40)
-    if rc:
-        WARN.append("could not read the staging boot id, so the reboot cannot be proven")
-        return True
-    before = before.strip()
-    subprocess.run(SSH + [tgt, "systemctl reboot"], capture_output=True, timeout=30)
-    say("  rebooting, waiting for a NEW boot id")
-    for i in range(40):
-        time.sleep(6)
-        rc, after = capture(SSH + [tgt, "cat /proc/sys/kernel/random/boot_id"], timeout=25)
-        if not rc and after.strip() and after.strip() != before:
-            say("  back after about %ds, boot id changed" % ((i + 1) * 6))
-            break
-    else:
-        # A TEST THAT CAN PASS WITHOUT THE EVENT HAPPENING IS NOT A TEST. Waiting for ssh to answer
-        # is not enough: right after the command is issued the box is still up and answers fine.
-        BAD.append("staging did not reboot (the boot id never changed)")
+    say()
+    say(dg)
+    say()
+    say("  GATE: %s" % gate)
+    if gate != "GO":
+        BAD.append("the test droplet said %s, so PRODUCTION WAS NOT TOUCHED" % gate)
         return False
-
-    time.sleep(8)
-    # Through docker exec: the container publishes no host port, deliberately.
-    rc, out = capture(SSH + [tgt, "docker exec s4biz-web curl -s -o /dev/null -w '%{http_code}' "
-                                  "--max-time 15 http://127.0.0.1:8000/api/health"], timeout=45)
-    if "200" not in out:
-        BAD.append("staging did not come back healthy after the reboot (got %s)" % out.strip()[:20])
-        return False
-    OK.append("staging survived a reboot")
+    OK.append("validated on the test droplet, including a reboot")
     return True
 
 
 def do_deploy():
-    head("4/6  DEPLOY TO PRODUCTION")
+    head("5/8  DEPLOY TO PRODUCTION")
     if deploy(HOST, proxy=True):
         BAD.append("production deploy failed")
         return False
@@ -282,7 +314,7 @@ def fetch(url, ua=BROWSER_UA, timeout=20):
 
 
 def do_verify():
-    head("5/6  VERIFY FROM OUTSIDE")
+    head("7/8  VERIFY FROM OUTSIDE")
     say("  The droplet's own monitoring sits behind the same proxy it would be monitoring, so a")
     say("  check that runs there cannot see the outage that matters. These run from here.")
 
@@ -426,7 +458,7 @@ def check_certificate():
 # 6/6  SAFE POINT
 # ---------------------------------------------------------------------------------------------
 def do_tag():
-    head("6/6  SAFE POINT")
+    head("8/8  SAFE POINT")
     rc, _ = git("rev-parse", "--git-dir")
     if rc:
         say("  no git repository, nothing to tag")
@@ -464,7 +496,12 @@ def do_rollback(target):
 def main():
     ap = argparse.ArgumentParser(description="Ship s4biz.io. One command.")
     ap.add_argument("--test", action="store_true", help="run the checks and stop")
-    ap.add_argument("--stage", action="store_true", help="validate on the staging twin first")
+    # STAGING IS THE DEFAULT. Opting IN to validation means it is skipped on exactly the run that
+    # was in a hurry, which is the run that needed it. Skipping is now a deliberate, named act.
+    ap.add_argument("--no-stage", action="store_true",
+                    help="skip the test droplet entirely, deliberately")
+    ap.add_argument("--fast-stage", action="store_true",
+                    help="validate on the test droplet but skip the reboot (weaker, say so)")
     ap.add_argument("--dns", action="store_true", help="also move DNS from Tilda to the droplet")
     ap.add_argument("--no-preview", action="store_true", help="skip the have-you-looked gate")
     ap.add_argument("--rollback", nargs="?", const="last-known-good", default=None)
@@ -488,9 +525,15 @@ def main():
 
     do_git(a.message)
 
-    if a.stage and not do_stage():
-        say("\n[X] the staging twin did not validate, so PRODUCTION WAS NOT TOUCHED.")
+    if a.no_stage:
+        WARN.append("the test droplet was SKIPPED deliberately (--no-stage)")
+        say("\n  [!] skipping the test droplet. Production is the first place this runs.")
+    elif not do_stage(fast=a.fast_stage):
+        say("\n[X] the test droplet did not validate, so PRODUCTION WAS NOT TOUCHED.")
+        say("    Read the checks above. If a CHECK is the thing that is wrong, fix the check.")
         return 2
+    if a.fast_stage:
+        WARN.append("the reboot test was skipped (--fast-stage), which is the weaker validation")
 
     if not do_deploy():
         return 1
@@ -499,7 +542,7 @@ def main():
     # the deploy because the target directory has to exist and the container has to be there to
     # re-read the file. NON-BLOCKING: an enquiry is written to disk before any delivery is tried,
     # so a missing mail credential costs a notification, never a lead.
-    head("4b/6  SECRETS")
+    head("6/8  SECRETS")
     rc = run([sys.executable, os.path.join(HERE, "import_secrets.py")], timeout=300)
     if rc == 0:
         OK.append("secrets reused from the shared droplet store")
@@ -528,7 +571,7 @@ def main():
     # the panel is commenting on a decision rather than making one. A rate-limited model must not
     # be able to block a good release, and an agreeable one must not be able to wave through a
     # broken one; both directions are failures, and only the deterministic checks above decide.
-    head("RELEASE REVIEW")
+    head("RELEASE NOTES")
     try:
         run([sys.executable, os.path.join(HERE, "quorum.py")], timeout=480,
             env={**os.environ,

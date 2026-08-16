@@ -1,0 +1,67 @@
+# OFF-BOX monitoring, every ten minutes.
+#
+# THIS IS THE ONLY MONITOR OUTSIDE THE FAILURE DOMAIN. Everything else that watches this site runs
+# on the droplet, behind the same shared proxy it would be reporting on, so when that proxy dies
+# they all go quiet together and say nothing. That happened on this host: every domain was down
+# for about six hours and the first anybody knew was a person opening a browser.
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe
+        run: |
+          set -u
+          # A BROWSER USER AGENT. The bot gate serves an unrecognised agent a 404 on page routes,
+          # so a monitor announcing itself as a tool measures the GATE and not the site. That
+          # blind spot let a front page report healthy while returning 404 for weeks, because the
+          # accepted-status list had been widened to match the broken probe.
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+          FAIL=0
+          # host|url|expected|min-bytes.  /api/health proves the container answers; / proves the
+          # PAGE is served, and a blank 200 passes the first and fails the second.
+          TARGETS=(
+            "api|https://s4biz.io/api/health|^200$|10"
+            "apex|https://s4biz.io/|^200$|2000"
+            "www|https://www.s4biz.io/|^(200|301|302|308)$|0"
+            "robots|https://s4biz.io/robots.txt|^200$|100"
+            "sitemap|https://s4biz.io/sitemap.xml|^200$|100"
+          )
+          for t in "${TARGETS[@]}"; do
+            IFS='|' read -r name url want minb <<< "$t"
+            body=$(curl -sS -A "$UA" --max-time 25 -w '\n%{http_code}' "$url" || echo $'\n000')
+            code=$(printf '%s' "$body" | tail -1)
+            size=$(printf '%s' "$body" | head -n -1 | wc -c)
+            if [[ "$code" =~ $want ]] && [ "$size" -ge "$minb" ]; then
+              echo "ok    $name  $code  ${size}b"
+            else
+              echo "::error::$name $url -> $code (${size} bytes), expected $want and >= $minb bytes"
+              FAIL=1
+            fi
+          done
+
+          # A lapsed certificate takes EVERY site on the shared proxy down at the same instant,
+          # and it is the one outage that arrives on a published schedule. Caddy renews at 30
+          # days, so under 10 means renewal has been failing for about three weeks.
+          for host in s4biz.io www.s4biz.io; do
+            end=$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null \
+                  | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+            if [ -z "$end" ]; then
+              echo "::warning::could not read the certificate for $host (unknown, not expired)"
+              continue
+            fi
+            left=$(( ( $(date -d "$end" +%s) - $(date +%s) ) / 86400 ))
+            echo "cert  $host  $left days"
+            [ "$left" -lt 10 ] && echo "::warning::$host certificate has only $left days left"
+            [ "$left" -lt 7 ] && { echo "::error::$host certificate expires in $left days"; FAIL=1; }
+          done
+          exit $FAIL

@@ -64,13 +64,24 @@ DEST = "/opt/s4biz-stack/s4biz.env"
 CONTAINER = "s4biz-web"
 
 # THE ALLOW-LIST IS THE SECURITY BOUNDARY. Add a key here only when this site genuinely needs it.
-WANTED = ["GMAIL_SENDER", "GMAIL_SA_B64", "BOT_TOKEN", "ALERT_TG_CHAT"]
+#
+# OPENAI_* WAS ADDED DELIBERATELY, and it is worth writing down why the earlier refusal was
+# reversed. The four-model release panel needs an inference key, and the first attempt to avoid
+# granting one ran the panel inside the neighbour's container instead. That worked on paper and
+# was worse in practice: it made every release review depend on another project's container being
+# up and keeping its name, which is a cross-project dependency for a convenience feature.
+#
+# The operator's instruction was to hold the keys here, the same way cybergod.ai does. So the site
+# holds the two it actually uses, under its own path, chmod 600, never in git, and the genuinely
+# dangerous ones are still refused by name below. That is a smaller grant than mounting the whole
+# shared file, which is what the neighbour does.
+WANTED = ["GMAIL_SENDER", "GMAIL_SA_B64", "BOT_TOKEN", "ALERT_TG_CHAT",
+          "OPENAI_API_KEY", "OPENAI_BASE_URL"]
 
 # Never, under any circumstances. Listed explicitly so that a careless edit to WANTED still fails,
 # and so the intent is readable rather than implied by an omission.
 FORBIDDEN = [
     "SHODAN_API_KEY",
-    "OPENAI_API_KEY",
     "COLT_BOT_PASSWORD",
     "ABUSEIPDB_KEY",
     "SMTP_PASS",
@@ -169,7 +180,11 @@ def remote_script(show_only: bool) -> str:
         "  echo '== verifying the running container actually has them =='",
         "  for k in %s; do" % " ".join(WANTED),
         "    n=$(docker exec %s sh -c \"printenv $k 2>/dev/null | wc -c\" || echo 0);" % CONTAINER,
-        "    if [ \"$n\" -gt 1 ]; then printf '   %-18s present (%s chars)\\n' \"$k\" \"$((n-1))\";"
+        # EVERY LITERAL % IN A %-FORMATTED STRING MUST BE DOUBLED. These four lines are ONE
+        # expression ending in `% DEST`, so the printf conversions below belong to bash and have to
+        # be escaped from Python or it tries to substitute them and raises "not enough arguments
+        # for format string". That crash took out the whole secrets step on a live run.
+        "    if [ \"$n\" -gt 1 ]; then printf '   %%-18s present (%%s chars)\\n' \"$k\" \"$((n-1))\";"
         # NOT_ON_HOST, not MISSING. A key that does not exist anywhere on this droplet cannot be
         # fixed by re-running, and telling the operator to re-run was a wrong and unactionable
         # instruction. Distinguish "we could not find it" from "it did not reach the container".
