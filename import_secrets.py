@@ -122,8 +122,9 @@ def remote_script(show_only: bool) -> str:
         "  cd /opt/s4biz-stack && docker compose -p s4biz-stack -f docker-compose.web.yml up -d %s"
         % "web",
         "  sleep 3",
-        "  curl -s -o /dev/null -w '   local /api/health = %{http_code}\\n' --max-time 15"
-        " http://127.0.0.1:8091/api/health || true",
+        # Through docker exec: this container publishes no host port.
+        "  docker exec %s curl -s -o /dev/null -w '   local /api/health = %%{http_code}\\n'"
+        " --max-time 15 http://127.0.0.1:8000/api/health || true" % CONTAINER,
         "else",
         "  echo '   not running yet; the next deploy will read the file'",
         "fi",

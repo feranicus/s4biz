@@ -36,7 +36,7 @@ Public IP **64.225.108.200**, FRA1. Staging twin **165.245.244.174**. One contai
 | jobhuntwow.com | `jhw-web` | `jhw-web:8000` | | `# jhw:jobhuntwow` |
 | godeyes.ai | | | | |
 | klimaanlage-*.de, jev.best | `polara-web` | | | |
-| **s4biz.io** | **`s4biz-web`** | **`s4biz-web:8000`** | **`127.0.0.1:8091`** | **`# s4biz:site`** |
+| **s4biz.io** | **`s4biz-web`** | **`s4biz-web:8000`** | **none, deliberately** | **`# s4biz:site`** |
 
 Amnezia VPN (UDP) and joplin do not pass through Caddy and are never touched.
 
@@ -50,7 +50,12 @@ Amnezia VPN (UDP) and joplin do not pass through Caddy and are never touched.
    and both of its bots here.
 3. **Delete strictly between markers.** A range delete keyed on a word eventually starts inside
    another project's comment. That took every domain on the box down for six hours.
-4. **Never publish 80 or 443.** The shared proxy owns them. Loopback only.
+4. **Publish no host port at all.** The proxy reaches this container over the docker network, and
+   every health check goes through `docker exec`. This site originally published
+   `127.0.0.1:8091`, picked because it was not on a list of ports the siblings were known to use.
+   The first real deploy failed with *port is already allocated*: the list was reasoning about the
+   host instead of measuring it. Needing no port makes the collision impossible rather than
+   unlikely. Publishing 80 or 443 would take every site on the box down together.
 5. **Never hand-edit the droplet.** Fix the committed file and re-run.
 
 ### The Caddyfile is generated, not edited

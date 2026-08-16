@@ -245,8 +245,9 @@ def do_stage():
         return False
 
     time.sleep(8)
-    rc, out = capture(SSH + [tgt, "curl -s -o /dev/null -w '%{http_code}' --max-time 15 "
-                                 "http://127.0.0.1:8091/api/health"], timeout=45)
+    # Through docker exec: the container publishes no host port, deliberately.
+    rc, out = capture(SSH + [tgt, "docker exec s4biz-web curl -s -o /dev/null -w '%{http_code}' "
+                                  "--max-time 15 http://127.0.0.1:8000/api/health"], timeout=45)
     if "200" not in out:
         BAD.append("staging did not come back healthy after the reboot (got %s)" % out.strip()[:20])
         return False

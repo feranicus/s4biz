@@ -1,0 +1,38 @@
+# LINE ENDINGS ARE THE REPOSITORY'S BUSINESS, NOT THE PLATFORM'S.
+#
+# Without this, `git init` on Windows with the default core.autocrlf=true rewrites every text file
+# to CRLF in the working copy, which is what produced eighty "LF will be replaced by CRLF" warnings
+# on the first commit here.
+#
+# It is not only noise. Three separate defects in this family of projects have come from a byte
+# that differs between platforms:
+#   * `git archive` applies the same conversion as a checkout, so a Windows pack and a Linux pack
+#     of ONE commit produced different bytes. deploy_direct.py forces -c core.autocrlf=false for
+#     exactly that reason, and tests/test_portability.py asserts it.
+#   * a deploy payload sent to `bash -s` in text mode arrived as CRLF and failed with the
+#     memorable "$'\r': command not found".
+#   * the preview stamp hashed raw bytes, so it silently meant "previewed on this operating
+#     system" rather than "this frontend was previewed".
+#
+# Declaring LF here makes the working copy, the commit and the deployed artifact the same bytes
+# everywhere, so none of those can recur through a checkout.
+* text=auto eol=lf
+
+# Binaries must never be touched. A PNG can legitimately contain the bytes 0d 0a, and "normalising"
+# it corrupts the file.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.pdf binary
+*.pptx binary
+*.xlsx binary
+*.docx binary
+
+# Generated, and noisy in a diff. Still committed: the lockfile is what makes the image build
+# reproducible.
+package-lock.json -diff linguist-generated

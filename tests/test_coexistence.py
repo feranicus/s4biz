@@ -52,13 +52,39 @@ def test_the_compose_project_is_our_own():
     assert "-p %s" in d or "-p s4biz-stack" in d
 
 
-def test_the_published_port_collides_with_nothing():
-    """The neighbours already hold 8090, 3000, 8099, 9090, 5900 and 9222 on loopback."""
-    ports = re.findall(r'"127\.0\.0\.1:(\d+):\d+"', compose())
-    assert ports, "no loopback published port found"
-    for p in ports:
-        assert p not in NEIGHBOUR_PORTS, "port %s is already taken by another project here" % p
-    assert "8091" in ports
+def test_no_host_port_is_published_at_all():
+    """The only way to be certain a port is free on a box you do not fully control is to need none.
+
+    This used to publish 127.0.0.1:8091, asserted safe against a hardcoded list of what the
+    siblings were known to use. The first real deploy failed with "Bind for 127.0.0.1:8091 failed:
+    port is already allocated". The list was REASONING about the host instead of MEASURING it, and
+    there are six projects plus dev containers on that machine.
+
+    Choosing a different number would have repeated the same bet. Publishing nothing makes the
+    collision structurally impossible: the proxy reaches the container over the docker network, and
+    every health check goes through `docker exec`.
+    """
+    c = code_only(compose())
+    assert not re.search(r"^\s*ports:", c, re.M), (
+        "a published port has come back. It is not needed (the proxy reaches this container over "
+        "the docker network) and on a shared host it is a collision waiting for a deploy."
+    )
+    # Belt to those braces: 80 and 443 in particular would take every site on the box down.
+    for p in ("80:", "443:"):
+        assert p not in c, "publishing %s would collide with the shared proxy" % p
+
+
+def test_health_checks_do_not_assume_a_host_port():
+    """Every local probe has to work without a published port, or removing it silently breaks the
+    deploy's own verification and the staging reboot test."""
+    for f in ("deploy_direct.py", "ship.py", "import_secrets.py"):
+        src = code_only(read(ROOT, f))
+        assert "127.0.0.1:8091" not in src, "%s still probes the old host port" % f
+        if "/api/health" in src:
+            assert "docker exec" in src, (
+                "%s probes /api/health but never through docker exec, so it must be assuming a "
+                "published port" % f
+            )
 
 
 def test_no_neighbour_volume_is_mounted():

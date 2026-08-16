@@ -44,11 +44,21 @@ services:
     volumes:
       - s4biz_data:/data
       - s4biz_events:/var/log/s4biz
-    ports:
-      # Loopback only. Public traffic arrives through the shared caddy; this is for a local health
-      # check and for diagnosing without going through the proxy. Publishing 80 or 443 here would
-      # collide with that proxy and take every site on the box down.
-      - "127.0.0.1:8091:8000"
+    # NO PUBLISHED PORT, DELIBERATELY.
+    #
+    # This container does not need one. Public traffic arrives through the shared proxy over the
+    # docker network as http://s4biz-web:8000, and every local health check goes through
+    # `docker exec`, which needs no host port at all.
+    #
+    # It used to publish 127.0.0.1:8091, chosen because it was not in a list of ports the sibling
+    # projects were known to use. The first real deploy failed with "Bind for 127.0.0.1:8091
+    # failed: port is already allocated": the list was reasoning about the host rather than
+    # measuring it, and there are six projects plus assorted dev containers on this box. Picking a
+    # different number would repeat the same bet with a different guess.
+    #
+    # Publishing nothing makes the collision structurally impossible instead of unlikely, and it
+    # is also the smaller attack surface. Diagnosing without the proxy still works:
+    #     docker exec s4biz-web curl -s localhost:8000/api/health
     networks: [videodead_appnet]
     restart: unless-stopped
 

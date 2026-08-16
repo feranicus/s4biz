@@ -118,6 +118,12 @@ def remote(proxy=True):
         # already exists; on a fresh staging box it does not, and compose fails before it builds
         # anything. Creating it when absent is idempotent and touches nothing on production.
         "docker network inspect videodead_appnet >/dev/null 2>&1 || docker network create videodead_appnet",
+        # WHAT ALREADY HOLDS A PORT ON THIS HOST. Printed every deploy, because "8091 is free" was
+        # an assumption that survived until the first real deploy and then failed the whole run.
+        # This container publishes nothing, so the list is diagnostic rather than load bearing, but
+        # it is the only place the actual state of the box is visible.
+        "echo '== ports already published on this host =='",
+        "docker ps --format '{{.Names}}\\t{{.Ports}}' | grep -v '^\\S*\\t$' | sed 's/^/   /' || true",
         "echo '== build and (re)start %s =='" % CONTAINER,
         # NEVER --remove-orphans: this file defines one service, and everything else in the project
         # would look like an orphan to it.
@@ -150,8 +156,9 @@ def remote(proxy=True):
             "echo '== staging: no shared proxy on this box, skipping the caddy wiring =='",
             "echo -n 'image  : '; docker inspect %s -f '{{.Config.Image}}'" % CONTAINER,
             "sleep 4",
-            "curl -s -o /dev/null -w 'local /api/health = %{http_code}  (200 = LIVE)\\n'"
-            " --max-time 15 http://127.0.0.1:8091/api/health || true",
+            # Through docker exec, not a host port. This container publishes nothing.
+            "docker exec %s curl -s -o /dev/null -w 'local /api/health = %%{http_code}"
+            "  (200 = LIVE)\\n' --max-time 15 http://127.0.0.1:8000/api/health || true" % CONTAINER,
             "",
         ])
 
