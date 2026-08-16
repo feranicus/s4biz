@@ -1,0 +1,12 @@
+# Keep the build context tiny: ignore everything, then whitelist what the image needs.
+*
+!webapp
+
+# ...but NOT the operator's node_modules. `COPY webapp/frontend/ ./` runs AFTER `npm install` in
+# the frontend stage, so a host node_modules would be copied straight OVER the image's fresh
+# install. npm packages carry PER PLATFORM binaries (esbuild ships @esbuild/<os>-<arch> as an
+# optional dependency), so the image would then be built with whatever platform the operator's
+# folder happens to hold. That is exactly the failure the in-image gates exist to avoid.
+webapp/frontend/node_modules
+webapp/frontend/dist
+webapp/frontend/ssrtmp

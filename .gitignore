@@ -1,0 +1,33 @@
+# Secrets never touch git. The only credential that may live in the repository is an encrypted
+# CI secret; everything runtime lives in an env file on the droplet, chmod 600.
+*.env
+!*.env.example
+*_sa.json
+*.pem
+*.key
+
+node_modules/
+dist/
+ssrtmp/
+__pycache__/
+*.pyc
+.pytest_cache/
+# The test suite writes enquiries somewhere disposable so a run never appends to a real file.
+.pytest-data/
+.venv/
+venv/
+
+# vite drops a scratch config next to vite.config.js on every reload
+vite.config.js.timestamp-*
+vite.config.*.timestamp-*
+
+# Diagnostic output: host inventory, addresses, log excerpts. Never source.
+forensics-*.txt
+
+# The preview stamp is per machine state, not shared history.
+.ui-preview-stamp
+
+.DS_Store
+Thumbs.db
+# LibreOffice writes these while a document is open, and `git add -A` will happily commit one.
+.~lock.*#

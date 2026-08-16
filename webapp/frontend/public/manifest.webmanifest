@@ -1,0 +1,27 @@
+{
+  "name": "S4Biz — Sovereign Cyber, Cloud & AI",
+  "short_name": "S4Biz",
+  "description": "Sovereign cyber, cloud and AI engineering for regulated enterprises. One accountable partner across four jurisdictions.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0C1233",
+  "theme_color": "#0C1233",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["business", "security", "productivity"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Capabilities", "url": "/capabilities" },
+    { "name": "Work", "url": "/work" },
+    { "name": "Contact", "url": "/contact" }
+  ]
+}

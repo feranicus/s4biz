@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- MASKABLE: Android crops an installed icon to a circle, a squircle or a rounded square, and
+       it keeps only the middle 80%. Everything meaningful therefore sits inside the safe zone
+       (a 409px circle centred on 256,256), and the background is full bleed so no crop shows a
+       transparent corner. The plain icon.svg is NOT a substitute: at this crop its shield would
+       lose its shoulders. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#67E8F9"/>
+      <stop offset="45%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#E879F9"/>
+    </linearGradient>
+    <radialGradient id="bg" cx="0.2" cy="0.1" r="1.05">
+      <stop offset="0%" stop-color="#4F46E5"/>
+      <stop offset="55%" stop-color="#2A2379"/>
+      <stop offset="100%" stop-color="#0C1233"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <path d="M256 128 400 179v116c0 86-57 161-144 183-87-22-144-97-144-183V179L256 128Z"
+        fill="none" stroke="url(#g)" stroke-width="20" stroke-linejoin="round"/>
+  <path d="M307 232c-14-16-34-24-56-24-30 0-50 14-50 36 0 19 14 29 48 36 39 9 60 23 60 53 0 33-29 55-71 55-27 0-51-10-66-27"
+        fill="none" stroke="url(#g)" stroke-width="26" stroke-linecap="round"/>
+</svg>

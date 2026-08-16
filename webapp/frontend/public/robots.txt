@@ -1,0 +1,66 @@
+# s4biz.io — Stars4business OÜ
+#
+# robots.txt is a REQUEST, not a control. The enforcement is the bot gate in
+# webapp/backend/app/visitors.py: only the crawlers named in BOT_404_ALLOW are served page routes.
+# The two files MUST agree. A crawler allowed here but refused there simply burns crawl budget and
+# depresses ranking, which is exactly how a stale pre-rebrand snippet once survived in an index for
+# months. tests/test_seo.py asserts they match.
+
+# Search engines. These are how customers find us.
+User-agent: Googlebot
+Allow: /
+
+User-agent: Googlebot-Image
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: DuckDuckBot
+Allow: /
+
+# Link unfurlers: these render the preview card when the site is shared in a chat.
+User-agent: LinkedInBot
+Allow: /
+
+User-agent: Slackbot
+Allow: /
+
+User-agent: WhatsApp
+Allow: /
+
+User-agent: TelegramBot
+Allow: /
+
+# Backlink and SEO harvesters. Nothing here earns their traffic.
+User-agent: AhrefsBot
+Disallow: /
+
+User-agent: SemrushBot
+Disallow: /
+
+User-agent: MJ12bot
+Disallow: /
+
+User-agent: DotBot
+Disallow: /
+
+# AI training crawlers. Blocked deliberately: this is our own written material and our clients'
+# project descriptions. Flip one on individually if it ever earns its keep.
+User-agent: GPTBot
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: *
+Disallow: /api/
+Allow: /
+
+Sitemap: https://s4biz.io/sitemap.xml

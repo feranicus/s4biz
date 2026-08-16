@@ -1,0 +1,11 @@
+# s4biz:site BEGIN — managed by deploy_direct.py. Edit THIS file, never the droplet's Caddyfile.
+#
+# The markers are the whole safety mechanism. The deploy deletes strictly between them and appends
+# this file again, so it can never touch another project's block. A range delete keyed on a WORD
+# instead ("/s4biz/,/^}/d") eventually starts inside somebody else's comment and truncates their
+# site: that has happened on this exact host and produced a six hour outage.
+s4biz.io, www.s4biz.io {
+	encode zstd gzip
+	reverse_proxy s4biz-web:8000
+}
+# s4biz:site END

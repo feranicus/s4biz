@@ -1,0 +1,61 @@
+# s4biz.io — the corporate site (container s4biz-web).
+#
+# IT JOINS THE EXISTING videodead_appnet AND ONLY THAT NETWORK.
+#
+# The shared reverse proxy (videodead-caddy) owns :443 on this droplet and fronts cybergod.ai,
+# jobhuntwow.com and the others. It reaches this container as http://s4biz-web:8000. Two networks
+# would be an outage waiting to happen: Docker's DNS returns both addresses and the proxy dials
+# them at random, so roughly half the requests hit an address it cannot route to. That is the
+# documented cause of an intermittent 502 on a sibling site here. ONE network, defined in ONE file.
+#
+# IT DOES NOT TOUCH ANYTHING ELSE ON THE BOX. Amnezia VPN, VideoDead, joplin and the colt stack are
+# untouched. This is its own compose project (-p s4biz-stack) with its own container name.
+#
+# NEVER RUN THIS WITH --remove-orphans. It defines one service; anything else in the project would
+# look like an orphan and be deleted. That has already destroyed a sibling stack's log shipper and
+# both of its bots on this host.
+services:
+  web:
+    build:
+      context: .
+      dockerfile: webapp/Dockerfile
+    image: s4biz-web:latest
+    container_name: s4biz-web
+    env_file:
+      # Optional. Absent on a fresh box, which is fine: every value below has a working default and
+      # the only things that belong in here are secrets (GMAIL_SA_B64, BOT_TOKEN).
+      - path: ./s4biz.env
+        required: false
+    environment:
+      - SERVICE=s4biz-web
+      - DATA_DIR=/data
+      - EVENTS_LOG=/var/log/s4biz/events.log
+      # Where a contact enquiry goes. A comma separated list; notify.py sends to all of them.
+      - ALERT_EMAIL=feranicus@s4biz.io
+      # SEO. The gate serves a 404 to anything identifying as a bot that is not on this list, which
+      # is what keeps scrapers and AI training crawlers out. It MUST stay in agreement with
+      # public/robots.txt, and tests/test_seo.py asserts that.
+      - BOT_404=1
+      - BOT_404_ALLOW=googlebot,bingbot,duckduckbot,linkedinbot,slackbot,whatsapp,telegrambot,applebot
+      # Two years of HSTS is set unconditionally by the app. PRELOAD is not, because submission to
+      # hstspreload.org is a one way door: turn it on deliberately, once, after the domain has been
+      # live on this host for a while.
+      - HSTS_PRELOAD=0
+    volumes:
+      - s4biz_data:/data
+      - s4biz_events:/var/log/s4biz
+    ports:
+      # Loopback only. Public traffic arrives through the shared caddy; this is for a local health
+      # check and for diagnosing without going through the proxy. Publishing 80 or 443 here would
+      # collide with that proxy and take every site on the box down.
+      - "127.0.0.1:8091:8000"
+    networks: [videodead_appnet]
+    restart: unless-stopped
+
+volumes:
+  s4biz_data: {}
+  s4biz_events: {}
+
+networks:
+  videodead_appnet:
+    external: true
