@@ -113,6 +113,68 @@ def test_the_secret_script_actually_builds():
         assert k in body, "%s is in the forbidden list but never reaches the guard" % k
 
 
+def test_nothing_reads_stdin_while_bash_is_reading_the_script_from_it():
+    """`bash -s` READS ITS SCRIPT FROM STDIN, so nothing else in that script may consume it.
+
+    quorum.py shipped with `cat > /tmp/s4_facts.json` as the first line. That consumed the REST OF
+    THE SCRIPT as its input: the facts file received the remaining bash, bash had nothing left to
+    execute, and the panel produced complete silence. Not an error, not a timeout, just an empty
+    section under a heading, which reads as "nothing to report". Every run said 0 of 4 answered.
+
+    The sibling project has the identical defect on record, where a secret was piped to `bash -s`
+    and the droplet executed the key as a command. Same stream, same cause, second occurrence.
+
+    Payloads travel INSIDE the script, base64 encoded.
+    """
+    for f in ("quorum.py", "import_secrets.py", "deploy_direct.py", "stagegate.py"):
+        code = code_only(read(ROOT, f))
+        if "bash -s" not in code:
+            continue
+        # A bare redirect-from-stdin at the start of a remote script is the shape of the bug.
+        assert not re.search(r"^\s*\"?cat > ", code, re.M), (
+            "%s has a `cat > file` in a script sent to `bash -s`. It will swallow the rest of the "
+            "script and the command will silently do nothing." % f
+        )
+    q = code_only(read(ROOT, "quorum.py"))
+    assert "base64.b64encode" in q, "the facts must travel inside the script, not on stdin"
+    assert "input=script.encode" in q, "only the script itself may be on stdin"
+
+
+def test_generated_shell_scripts_are_syntactically_valid():
+    """BUILD THEM AND CHECK THEM. These are shell programs assembled by string concatenation in
+    Python, and a parse of the Python proves nothing about the bash it emits.
+
+    THE SCRIPT GOES IN ON STDIN, NOT AS A FILE PATH. The first version wrote a temp file and
+    passed its name, which failed on the operator's machine: `bash.EXE` on Windows is WSL's bash,
+    and it cannot read a Windows path. It silently strips the backslashes, so
+    `C:\\Users\\feran\\AppData\\...` arrives as `C:UsersferanAppData...` and the file does not
+    exist. `bash -n` reads from stdin perfectly well and no path is involved at all.
+
+    Fourth time in this project that a check could not run on the machine invoking it: the
+    percent-encoded gate paths, the httpx import, the POSIX-only call, and now this.
+
+    Skipped where bash is genuinely absent, because a check that cannot run must say so rather
+    than fail.
+    """
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if not bash:
+        return  # CI runs this on ubuntu, where bash always exists
+
+    import import_secrets
+
+    for name, script in (("import_secrets show", import_secrets.remote_script(True)),
+                         ("import_secrets write", import_secrets.remote_script(False))):
+        # BYTES, never text mode: on Windows that would rewrite every newline into CRLF and bash
+        # would fail on the carriage returns rather than on anything we wrote.
+        r = subprocess.run([bash, "-n"], input=script.encode("utf-8"),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        err = r.stderr.decode("utf-8", "replace")
+        assert r.returncode == 0, "%s generates invalid bash:\n%s" % (name, err[:400])
+
+
 def test_the_deploy_still_ships_the_commit_even_if_the_push_failed():
     """The two are independent on purpose: production gets exactly what was tested whether or not
     GitHub was reachable."""

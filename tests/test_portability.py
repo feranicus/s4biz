@@ -161,6 +161,39 @@ def test_a_missing_source_file_is_a_defect_not_a_missing_toolchain():
     )
 
 
+def test_no_test_hands_a_windows_path_to_bash():
+    """`bash.EXE` on Windows is WSL's bash, and it CANNOT read a Windows path.
+
+    It strips the backslashes silently, so `C:\\Users\\feran\\AppData\\Local\\Temp\\x.sh` arrives as
+    `C:UsersferanAppDataLocalTempx.sh` and bash reports "No such file or directory" about a file
+    that exists. A syntax check written with a temp file therefore failed the whole run on the
+    operator's machine while passing in a Linux sandbox.
+
+    Scripts go to bash on STDIN. No path, no translation, works everywhere.
+
+    This is the FOURTH instance of one root cause in this project: percent-encoded gate paths, an
+    httpx import that was not a dependency, a POSIX-only call on an error path, and now this.
+    Writing the rule down has not been enough, so it is a test.
+    """
+    bad = []
+    for p in _py_files(TESTS):
+        src = open(p, encoding="utf-8").read()
+        code = re.sub(r'"""[\s\S]*?"""', "", src)
+        code = "\n".join(ln for ln in code.splitlines() if not ln.lstrip().startswith("#"))
+        if not re.search(r'\[\s*bash\s*,', code):
+            continue
+        # SCOPE THE MATCH TO THE ARGUMENTS. The first version searched `args + code`, i.e. the
+        # whole file, which contains `os.path` in every module here, so it failed a correct file
+        # on the very first run. A bash invocation may carry flags and nothing else.
+        for m in re.finditer(r"\[\s*bash\s*,([^\]]*)\]", code):
+            args = m.group(1)
+            if re.search(r"\bpath\b|\.name\b|tempfile", args):
+                bad.append("%s passes a filesystem path to bash: [bash,%s]"
+                           % (os.path.basename(p), args.strip()[:60]))
+                break
+    assert not bad, "\n  ".join(["bash cannot read a Windows path:"] + bad)
+
+
 def test_no_deploy_script_writes_a_payload_into_argv():
     """Windows caps a command line at about 32 kilobytes, and Python surfaces that overflow as
     FileNotFoundError, which reads as "ssh is not installed" on a machine where ssh works. Payloads

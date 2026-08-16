@@ -53,12 +53,12 @@ SOURCE = os.environ.get("SECRET_SOURCE", "/opt/colt-stack/assess-bot/.env")
 # The chat id IS on the droplet, under a different name, in a sibling project. Rather than ask for
 # it to be pasted, look for it. A chat id is an identifier rather than a credential, but it is
 # still read on the droplet and never printed.
-FALLBACKS = {
-    "ALERT_TG_CHAT": [
-        ("/opt/jobhuntwow/agent/.env", "TELEGRAM_CHAT_ID"),
-        ("/opt/jhw/agent/.env", "TELEGRAM_CHAT_ID"),
-        ("/opt/colt-stack/assess-bot/.env", "ALERT_TG_CHAT"),
-    ],
+# SEARCH, do not guess a path. The first version listed two hardcoded locations for the sibling
+# project's env file and neither existed on this droplet, so the key was reported "NOT ON THIS
+# HOST" while sitting in a third place. Asking the filesystem is one command and cannot be wrong
+# about where a file is.
+FALLBACK_SEARCH = {
+    "ALERT_TG_CHAT": ["ALERT_TG_CHAT", "TELEGRAM_CHAT_ID", "PATCH_TG_CHAT", "TG_CHAT"],
 }
 DEST = "/opt/s4biz-stack/s4biz.env"
 CONTAINER = "s4biz-web"
@@ -130,22 +130,25 @@ def remote_script(show_only: bool) -> str:
         % forbidden,
     ]
 
-    # Fill anything the primary store does not have from a named sibling file, under OUR key name.
-    for want, sources in FALLBACKS.items():
-        lines.append("if ! grep -q '^%s=' \"$TMP\"; then" % want)
-        for path, srckey in sources:
-            lines.append(
-                "  if [ -z \"$(grep -c '^%s=' \"$TMP\" | grep -v 0)\" ] && [ -f '%s' ]; then"
-                "    V=\"$(grep -m1 '^%s=' '%s' | cut -d= -f2-)\";"
-                "    if [ -n \"$V\" ]; then printf '%s=%%s\\n' \"$V\" >> \"$TMP\";"
-                "      printf '   take %-18s %%s chars (from %s)\\n' \"${#V}\";"
-                "    fi; fi" % (want, path, srckey, path, want, want, path)
-            )
-        lines.append(
-            "  grep -q '^%s=' \"$TMP\" || printf '   %-18s NOT ON THIS HOST (optional)\\n' '%s';"
-            % (want, want, want)
-        )
-        lines.append("fi")
+    # Fill anything the primary store lacks by SEARCHING the droplet for it under any of its
+    # known names. The chat id is not in the assessment platform's file (that project leaves it
+    # empty and alerts every authenticated operator instead) but it does exist elsewhere on the
+    # box, and a hardcoded path guessed wrong twice.
+    for want, aliases in FALLBACK_SEARCH.items():
+        pat = "|".join(aliases)
+        lines += [
+            "if ! grep -q '^%s=' \"$TMP\"; then" % want,
+            # Bounded: only env files, only under /opt, only two levels deep. An unbounded find on
+            # a shared host is both slow and somebody else's business.
+            "  V=\"$(grep -rhoE '^(%s)=[^ ]+' /opt --include='*.env' --include='.env'"
+            " --exclude-dir=node_modules 2>/dev/null | cut -d= -f2- | grep -m1 -E '^-?[0-9]+$' || true)\""
+            % pat,
+            "  if [ -n \"$V\" ]; then printf '%s=%%s\\n' \"$V\" >> \"$TMP\";"
+            "    printf '   take %%-18s %%s chars (found on this host)\\n' '%s' \"${#V}\";"
+            "  else printf '   %%-18s NOT ON THIS HOST (optional)\\n' '%s'; fi"
+            % (want, want, want),
+            "fi",
+        ]
 
     if show_only:
         lines += ["rm -f \"$TMP\"", "echo 'SHOW_ONLY: nothing was written'", ""]

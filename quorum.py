@@ -34,6 +34,7 @@ bad day may turn a verified release into a failed one.
 WHY IT RUNS ON THE DROPLET. OPENAI_API_KEY and the Gmail credentials live there and deliberately
 never enter git or this machine. One ssh session, facts in over stdin, prose out.
 """
+import base64
 import json
 import os
 import subprocess
@@ -128,9 +129,24 @@ def remote(payload_json, dry=False):
     # here. It worked, and it made every release review depend on another project's container
     # being up and keeping its name. The key is imported to this site now, so the indirection
     # bought nothing and cost a dependency.
+    # `bash -s` READS ITS SCRIPT FROM STDIN, so nothing else may use that stream.
+    #
+    # This shipped as `cat > /tmp/s4_facts.json` on the first line, which consumed the REST OF THE
+    # SCRIPT as its input: the facts file got the remaining bash, bash had nothing left to run, and
+    # the whole panel produced silence. Not an error, not a timeout, just an empty section under
+    # the heading. That is why every run reported "0 of 4 answered".
+    #
+    # This exact defect is already recorded in the sibling project's notes, where a secret was
+    # piped to `bash -s` and the droplet executed the key as a command. Same stream, same cause.
+    #
+    # The facts now travel INSIDE the script as base64, so stdin is used by exactly one thing. It
+    # also removes a quoting layer: the JSON never passes through a shell word.
+    facts_b64 = base64.b64encode(payload_json.encode("utf-8")).decode("ascii")
     script = r'''
 set -e
-cat > /tmp/s4_facts.json
+base64 -d > /tmp/s4_facts.json <<'B64EOF'
+''' + facts_b64 + r'''
+B64EOF
 docker exec -i s4biz-web python3 - <<'PY' < /tmp/s4_facts.json
 import json, os, sys, urllib.request, urllib.error
 
@@ -200,10 +216,17 @@ PY
 
     tgt = "%s@%s" % (USER, HOST)
     try:
-        r = subprocess.run(SSH + [tgt, "bash -s"],
-                           input=(script + "\n" + payload_json).encode("utf-8"),
+        # The script is the ONLY thing on stdin now. Bytes, never text mode: on Windows that would
+        # rewrite every newline into CRLF and bash would fail on "$'\r': command not found".
+        r = subprocess.run(SSH + [tgt, "bash -s"], input=script.encode("utf-8"),
                            timeout=420, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        return r.returncode, r.stdout.decode("utf-8", "replace")
+        out = r.stdout.decode("utf-8", "replace")
+        if not out.strip():
+            # SILENCE IS A FAILURE, and it has to say so. An empty section under a heading reads
+            # as "nothing to report" when it actually means the remote script never ran.
+            out = ("[!] the panel returned NOTHING. That is not 'no findings', it means the "
+                   "remote script produced no output at all.")
+        return r.returncode, out
     except subprocess.TimeoutExpired:
         return 1, "the panel did not answer within 7 minutes"
 
