@@ -8,6 +8,7 @@ import Landing from "./pages/Landing.jsx";
 import AI from "./pages/AI.jsx";
 import Cloud from "./pages/Cloud.jsx";
 import Cyber from "./pages/Cyber.jsx";
+import Custody from "./pages/Custody.jsx";
 import Capabilities from "./pages/Capabilities.jsx";
 import Method from "./pages/Method.jsx";
 import Work from "./pages/Work.jsx";
@@ -29,6 +30,7 @@ export const ROUTES = [
   { path: "/ai", el: AI },
   { path: "/cloud", el: Cloud },
   { path: "/cyber", el: Cyber },
+  { path: "/custody", el: Custody },
   { path: "/capabilities", el: Capabilities },
   { path: "/method", el: Method },
   { path: "/work", el: Work },

@@ -2194,3 +2194,311 @@ a {
     color: #000;
   }
 }
+
+/* ---- diagrams -------------------------------------------------------------------------------
+   A canvas has NO intrinsic size, so without an explicit height it collapses to zero and the page
+   looks as though the diagram simply is not there. The height comes from the component; this rule
+   owns the frame around it.
+
+   No new colours: the surface is the existing card ink and the existing line, both already
+   measured by the contrast gate. A diagram is not a place to introduce a palette. */
+.dia {
+  margin: 26px 0 12px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  background: var(--ink-3);
+  overflow: hidden;
+}
+.dia canvas {
+  display: block;
+  width: 100%;
+}
+/* The caption under a diagram is a caption, not body copy: it explains the picture and then gets
+   out of the way. */
+.sec .dia + .note {
+  margin: 0 0 6px;
+  max-width: 70ch;
+}
+@media (max-width: 720px) {
+  .dia {
+    margin: 20px 0 10px;
+  }
+}
+
+/* A .split that FOLLOWS a card grid needs its own top space.
+   .g3 has no bottom margin because it is normally the last thing in a section, and .split's column
+   headings are pulled up tight to their content. Put those two together, which only happens on the
+   custody page, and the heading lands on the bottom edge of the card above it. */
+.g3 + .split,
+.g2 + .split,
+.g4 + .split {
+  margin-top: 44px;
+}
+@media (max-width: 720px) {
+  .g3 + .split,
+  .g2 + .split,
+  .g4 + .split {
+    margin-top: 28px;
+  }
+}
+
+/* ---- the architecture map: Kvadrocycle shape ------------------------------------------------
+   HTML cards over one SVG wire layer. Cards carry a badge, an icon, a title and a line saying what
+   the piece does, so the diagram EXPLAINS rather than labels. */
+.amap {
+  position: relative;
+  margin: 26px 0 14px;
+  padding: 18px 16px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  background: var(--ink-3);
+  height: 1160px;
+}
+.amap-wires { position: absolute; inset: 18px 16px; width: calc(100% - 32px); height: calc(100% - 36px); }
+.amap-band { stroke: var(--line); stroke-width: 1; opacity: 0.45; }
+.amap-join { stroke: var(--magenta-lt); stroke-width: 2; opacity: 0.9; }
+.amap-w { fill: none; stroke: var(--line); stroke-width: 1.4; }
+.amap-w.h1, .amap-w.h2 {
+  stroke: var(--cyan); stroke-width: 2.4; stroke-dasharray: 6 8;
+  animation: amapflow 1s linear infinite;
+}
+.amap-w.h2 { stroke: var(--violet); }
+@keyframes amapflow { to { stroke-dashoffset: -14; } }
+.amap-bandl, .amap-joinl {
+  position: absolute; left: 20px;
+  font-family: var(--f-mono); font-size: 0.62rem; letter-spacing: 0.14em; color: var(--faint);
+  pointer-events: none;
+}
+.amap-joinl { left: auto; right: 20px; color: var(--magenta-lt); }
+.amap-card {
+  position: absolute;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+  box-shadow: 0 6px 22px rgba(8, 12, 34, 0.35);
+}
+.amap-card b { display: block; font-size: 0.92rem; color: var(--txt); margin: 6px 0 4px; }
+.amap-card > span:last-child {
+  display: block; font-size: 0.74rem; line-height: 1.45; color: var(--muted);
+}
+.amap-ico { font-size: 1.05rem; line-height: 1; color: var(--cyan); }
+.amap-badge {
+  position: absolute; top: -9px; left: 12px;
+  padding: 2px 8px; border-radius: 999px;
+  font-family: var(--f-mono); font-size: 0.6rem;
+  color: var(--cta-ink); background: var(--cyan);
+}
+.amap-card.cy { border-color: rgba(34, 211, 238, 0.45); }
+.amap-card.vi { border-color: rgba(139, 92, 246, 0.5); }
+.amap-card.vi .amap-ico { color: var(--violet); }
+.amap-card.vi .amap-badge { background: var(--violet); color: #fff; }
+.amap-card.ma { border-color: rgba(192, 38, 211, 0.5); }
+.amap-card.ma .amap-ico { color: var(--magenta-lt); }
+.amap-card.ma .amap-badge { background: var(--magenta); color: #ffffff; }
+.amap-card.no { border-color: rgba(251, 113, 133, 0.6); background: rgba(251, 113, 133, 0.1); }
+.amap-card.no .amap-ico { color: #fb7185; }
+.amap-card.no .amap-badge { background: #fb7185; color: var(--cta-ink); }
+
+@media (max-width: 860px) {
+  /* Below this width the cards cannot hold a sentence, so the map becomes a readable stack and the
+     wires are dropped. A diagram nobody can read is worse than a list. */
+  .amap { height: auto; padding: 14px; }
+  .amap-wires, .amap-bandl, .amap-joinl { display: none; }
+  .amap-card { position: static; width: auto !important; margin: 0 0 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .amap-w.h1, .amap-w.h2 { animation: none; }
+}
+
+/* ---- an investigation, step by step ---------------------------------------------------------- */
+.cwalk {
+  margin: 30px 0 0;
+  padding: 24px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  background: var(--ink-3);
+}
+.cwalk-tag {
+  font-family: var(--f-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  color: var(--cyan);
+}
+.cwalk-h h3 {
+  margin: 8px 0 6px;
+}
+.cwalk-h p {
+  margin: 0;
+  color: var(--muted);
+}
+.cwalk-s {
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+}
+.cwalk-s > li {
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  gap: 14px;
+  padding: 0 0 20px;
+  position: relative;
+}
+.cwalk-s > li:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 40px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--line);
+}
+.cwalk-n {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-family: var(--f-mono);
+  font-size: 0.85rem;
+  color: var(--txt);
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+}
+.cwalk-at {
+  display: inline-block;
+  font-family: var(--f-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+.cwalk-s h4 {
+  margin: 0 0 6px;
+  font-size: 1.02rem;
+}
+.cwalk-s p {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.cwalk-w {
+  display: block;
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  border-left: 2px solid var(--cyan);
+  background: rgba(34, 211, 238, 0.08);
+  color: var(--txt);
+  font-size: 0.9rem;
+}
+@media (max-width: 720px) {
+  .amap { padding-left: 18px; }
+  .amap-c { margin-left: 0; }
+  .amap-h { grid-template-columns: 38px 1fr; }
+  .amap-n { width: 38px; height: 38px; border-radius: 12px; }
+  .cwalk { padding: 18px 16px; }
+}
+
+/* ---- deep dive: one card per layer, with a product mapping ----------------------------------- */
+.dlay {
+  margin: 0 0 16px;
+  padding: 22px 24px;
+  border-radius: var(--r);
+  border: 1px solid var(--line);
+  background: var(--ink-3);
+}
+.dlay-h {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 14px;
+}
+.dlay-n {
+  width: 52px;
+  height: 52px;
+  border-radius: 15px;
+  display: grid;
+  place-items: center;
+  font-family: var(--f-disp);
+  font-size: 1.05rem;
+  color: var(--cta-ink);
+  background: var(--cyan);
+}
+.dlay-h h3 {
+  margin: 4px 0 4px;
+}
+.dlay-r {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.dlay > p {
+  margin: 0 0 16px;
+  color: var(--txt);
+  max-width: 78ch;
+}
+.dlay-lbl {
+  display: block;
+  margin: 0 0 8px;
+  font-family: var(--f-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.16em;
+  color: var(--faint);
+}
+.dlay-p,
+.dlay-c {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dlay-c {
+  margin-bottom: 0;
+}
+.dlay-p li {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.45);
+  background: rgba(34, 211, 238, 0.08);
+  color: var(--txt);
+  font-size: 0.82rem;
+}
+.dlay-c li {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+@media (max-width: 720px) {
+  .dlay { padding: 18px 16px; }
+  .dlay-h { grid-template-columns: 42px 1fr; gap: 12px; }
+  .dlay-n { width: 42px; height: 42px; border-radius: 13px; }
+}
+
+/* The open source chip row. Violet rather than cyan, so a reader scanning the page can tell the
+   two stacks apart without reading a heading. */
+.dlay-o {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dlay-o li {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(139, 92, 246, 0.5);
+  background: rgba(139, 92, 246, 0.1);
+  color: var(--txt);
+  font-size: 0.82rem;
+}
+.dlay-n.oss {
+  background: var(--violet);
+  color: #fff;
+}

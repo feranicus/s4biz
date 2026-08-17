@@ -74,6 +74,25 @@ export default function Capabilities() {
         </div>
       </section>
 
+      {/* ---- custody observability.
+             A TEASER, NOT A SUMMARY. It states the governing rule and gets out of the way. A page
+             that is only reachable from the More menu is a page nobody browsing the site will ever
+             find, and this is the one piece of work that a practitioner can link to directly. --- */}
+      <section className="sec alt" id="custody">
+        <div className="wrap">
+          <SectionHead
+            eyebrow={t("cus.eyebrow")}
+            h={t("cus.idea.h")}
+            lede={t("cap.cus.lede")}
+          />
+          <Reveal className="sec-cta" delay={120}>
+            <Link className="btn cta" to="/custody">
+              {t("cap.cus.go")}
+            </Link>
+          </Reveal>
+        </div>
+      </section>
+
       <section className="sec close">
         <div className="wrap">
           <Reveal as="h2">{t("ct.h")}</Reveal>

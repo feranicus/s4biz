@@ -11,9 +11,11 @@
  */
 
 import { DE_SERVICES } from "./de.services.js";
+import { DE_CUSTODY } from "./de.custody.js";
 
 export const DE = {
   ...DE_SERVICES.keys,
+  ...DE_CUSTODY.keys,
 
   /* ---------------- Rahmen ---------------- */
   "nav.ai": "KI",
@@ -250,6 +252,7 @@ export const DE = {
   /* ================= strukturierte Inhalte ================= */
   __content: {
     ...DE_SERVICES.content,
+    ...DE_CUSTODY.content,
     pillars: [
       {
         id: "discovery",

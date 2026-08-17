@@ -115,7 +115,8 @@ def do_tests():
     fe = os.path.join(HERE, "webapp", "frontend")
     vite = os.path.join(fe, "node_modules", "vite", "bin", "vite.js")
     if os.path.exists(vite):
-        for gate in ("i18n_gate.mjs", "layout_gate.mjs", "contrast_gate.mjs", "render_gate.mjs"):
+        for gate in ("i18n_gate.mjs", "layout_gate.mjs", "contrast_gate.mjs", "render_gate.mjs",
+                     "render_gate_classifier.test.mjs", "canvas_smoke.mjs"):
             rc = run(["node", os.path.join("tools", gate)], cwd=fe, timeout=600)
             if rc == 1:
                 BAD.append("frontend gate %s" % gate)

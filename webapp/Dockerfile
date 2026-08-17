@@ -30,6 +30,8 @@ COPY webapp/frontend/ ./
 RUN node tools/i18n_gate.mjs \
  && node tools/layout_gate.mjs \
  && node tools/contrast_gate.mjs \
+ && node tools/render_gate_classifier.test.mjs \
+ && node tools/canvas_smoke.mjs \
  && node tools/render_gate.mjs
 
 RUN npm run build

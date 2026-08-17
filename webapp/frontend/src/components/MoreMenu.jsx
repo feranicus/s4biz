@@ -9,6 +9,7 @@ import { useT } from "../i18n.jsx";
  * either the nav or this menu. */
 export const MORE_LINKS = [
   { to: "/capabilities", key: "nav.capabilities" },
+  { to: "/custody", key: "nav.custody" },
   { to: "/method", key: "nav.method" },
   { to: "/contact", key: "nav.contact" },
   { to: "/privacy", key: "nav.privacy" },

@@ -200,3 +200,42 @@ def test_the_monitor_and_the_deploy_agree_on_what_www_does():
     assert re.search(r"fetch\([^)]*www[^)]*follow=False[^)]*\)", ship), \
         ("the www probe follows redirects again. urllib follows 3xx silently, so the check would "
          "only ever observe the apex's 200 and could never fail.")
+
+
+# --------------------------------------------------------------------------------------
+# The custody page. The four-places rule is already enforced above, for EVERY route, by
+# test_every_route_is_in_the_backend_whitelist / _in_the_sitemap / _reachable_from_the_chrome.
+# A custody-specific copy of that was written here and deleted: it duplicated a working check
+# and got it wrong, because it read the header and the More menu and forgot the tab bar.
+# --------------------------------------------------------------------------------------
+def test_the_custody_page_holds_no_copy_of_its_own():
+    """The page is layout. The words are data. A translator must not be able to break the layout.
+
+    Same rule as the three service pages: every string arrives through t() or useContent, so the
+    German pack can only ever change words.
+    """
+    src = open(os.path.join(ROOT, "webapp", "frontend", "src", "pages", "Custody.jsx"),
+               encoding="utf-8").read()
+    body = src[src.index("return ("):]
+    # Text sitting directly between tags, which is what hardcoded copy looks like.
+    stray = [x.strip() for x in re.findall(r">\s*([A-Za-z][^<>{}\n]{12,})\s*<", body)]
+    assert not stray, "hardcoded copy in the page: %r" % stray[:3]
+
+
+def test_the_custody_content_names_no_person_and_no_agency():
+    """The architecture was written from a real case and is published without it, deliberately.
+
+    A commercial page naming somebody who is charged and not convicted carries defamation exposure,
+    and the argument is structural: it holds for every custodian or for none. The case facts are
+    also not ours to publish. This is a content decision that a later edit could quietly undo, so
+    it is asserted rather than trusted.
+    """
+    banned = ["fbi", "yaroch", "counterintelligence", "supervisory special agent",
+              "925,426", "eighteen months", "charging affidavit"]
+    for loc in ("en", "de"):
+        p = os.path.join(ROOT, "webapp", "frontend", "src", "locales", "%s.custody.js" % loc)
+        text = open(p, encoding="utf-8").read()
+        # Comments explain WHY the case was removed, so they must not be scanned for its traces.
+        text = re.sub(r"/\*[\s\S]*?\*/", "", text).lower()
+        hit = [b for b in banned if b in text]
+        assert not hit, "%s.custody.js names the case again: %r" % (loc, hit)

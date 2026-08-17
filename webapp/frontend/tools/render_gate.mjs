@@ -128,8 +128,28 @@ try {
     logLevel: "silent",
   });
 } catch (e) {
-  console.error("[X] the render gate could not bundle the app:\n" + (e.message || e));
-  process.exit(1);
+  const msg = String(e.message || e);
+  // EXIT 1 IS A DEFECT IN THE APP. EXIT 2 IS A TOOLCHAIN THIS MACHINE CANNOT RUN.
+  //
+  // esbuild ships a per-platform binary as an optional dependency, so a node_modules installed on
+  // one operating system and used from another fails with "installed for another platform". That
+  // says nothing about the code. Reporting it as a defect would block a ship over a local install
+  // the operator never touched, and ship.py already knows to treat 2 as "it will run in the image".
+  //
+  // Conflating the two is the exact mistake this project family made once before, and it cost
+  // three ships: a check that cannot run must say so rather than inventing a verdict.
+  const toolchain =
+    /another platform|Cannot find module|ERR_MODULE_NOT_FOUND|EACCES|not supported on|Command failed.*esbuild/i.test(
+      msg,
+    );
+  console.error(
+    (toolchain
+      ? "[!] the render gate cannot run here: the toolchain is unusable on this machine.\n" +
+        "    This is NOT a finding about the app. It runs in the image, where the toolchain is\n" +
+        "    correct by construction.\n"
+      : "[X] the render gate could not bundle the app:\n") + msg,
+  );
+  process.exit(toolchain ? 2 : 1);
 }
 
 const { execFileSync } = await import("node:child_process");

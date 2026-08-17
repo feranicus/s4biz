@@ -20,12 +20,14 @@
  */
 
 import { EN_SERVICES } from "./en.services.js";
+import { EN_CUSTODY } from "./en.custody.js";
 
 export const EN = {
   /* The three service pages live in their own file because they are the bulk of the words. They
      are spread in HERE so there is still exactly ONE dictionary and one fallback path at runtime.
      A second key space is what produced raw dotted keys on a live page in a sibling project. */
   ...EN_SERVICES.keys,
+  ...EN_CUSTODY.keys,
 
   /* ---------------- chrome ---------------- */
   "nav.ai": "AI",
@@ -265,6 +267,7 @@ export const EN = {
   /* ================= structured content ================= */
   __content: {
     ...EN_SERVICES.content,
+    ...EN_CUSTODY.content,
     pillars: [
       {
         id: "discovery",

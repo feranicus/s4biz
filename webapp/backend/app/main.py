@@ -117,8 +117,8 @@ if (_DIST / "assets").is_dir():
 # wrong twice over: a scanner walking a wordlist gets 200 on every entry, so its report says this
 # host "has" all of it; and any alerting that keys on 404 never fires. The real routes are a short,
 # known list. tests/test_routes.py fails if App.jsx and this set disagree.
-_APP_ROUTES = {"", "ai", "cloud", "cyber", "capabilities", "method", "work", "about", "contact",
-               "privacy", "impressum"}
+_APP_ROUTES = {"", "ai", "cloud", "cyber", "custody", "capabilities", "method", "work", "about",
+               "contact", "privacy", "impressum"}
 
 
 def _is_probe(path: str) -> bool:
